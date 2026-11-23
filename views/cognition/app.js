@@ -1,8 +1,12 @@
 const $ = id => document.getElementById(id);
 const bridge = window.AstrBotPluginView;
 let scopes = [],
-    schema = {},
-    values = {};
+    schema = {};
+let scopeRequest = 0;
+let settingsRequest;
+let savedSettings = {};
+const sessionSelections = new Map();
+const sessionKinds = {FriendMessage: '私聊', GroupMessage: '群聊'};
 const labels = {
     fact: '事实',
     preference: '偏好',
@@ -31,6 +35,16 @@ async function action(task) {
 
 function empty(container, message) {
     container.replaceChildren(el('p', message, 'empty'));
+}
+
+function confirmDeletion(message) {
+    const dialog = $('confirm-action');
+    $('confirm-message').textContent = message;
+    dialog.returnValue = 'cancel';
+    dialog.showModal();
+    return new Promise(resolve => {
+        dialog.addEventListener('close', () => resolve(dialog.returnValue === 'delete'), {once: true});
+    });
 }
 
 function selected() {
@@ -134,7 +148,16 @@ function graph(data) {
 }
 async function loadScope() {
     const scope = selected();
+    const request = ++scopeRequest;
+    $('scope-details').hidden = true;
+    $('scope-empty').hidden = Boolean(scope);
+    $('search').disabled = !scope;
     if (!scope) return;
+    const data = await bridge.apiGet('scope', {
+        scope,
+        query: $('query').value
+    });
+    if (request !== scopeRequest) return;
     const state = scopes.find(s => s.id === scope),
         stats = state?.stats || {};
     $('stats').replaceChildren();
@@ -148,10 +171,6 @@ async function loadScope() {
         node.append(el('span', label), el('strong', String(value)));
         $('stats').append(node);
     }
-    const data = await bridge.apiGet('scope', {
-        scope,
-        query: $('query').value
-    });
     graph(data);
     $('relations').replaceChildren();
     groupedRelations(data).forEach(r => {
@@ -204,7 +223,7 @@ async function loadScope() {
         detail.append(el('summary', `#${r.id} · ${Math.round(r.confidence*100)}% 置信度 · 查看依据`), el('div', `原文：${r.evidence}`), el('div', `来源：${r.source}`), el('div', `更新：${new Date(r.updated*1000).toLocaleString()}`));
         const remove = el('button', '忘记这条');
         remove.addEventListener('click', () => action(async () => {
-            if (!confirm('删除此事实的全部修订，并清除本会话待整理任务及原文，防止旧分析写回。继续？')) return;
+            if (!await confirmDeletion('将删除此事实的全部修订，以及此会话和人格的待整理任务与原文。')) return;
             await bridge.apiPost('forget', {
                 scope,
                 id: r.id
@@ -239,6 +258,7 @@ async function loadScope() {
         $('intentions').append(node);
     });
     if (!$('character').children.length && !$('intentions').children.length) empty($('character'), '自己的喜好、习惯和挂念会随着经历延续。');
+    $('scope-details').hidden = false;
 }
 async function refresh() {
     const old = selected();
@@ -246,7 +266,10 @@ async function refresh() {
     scopes = data.scopes;
     $('scope').replaceChildren();
     scopes.forEach(s => {
-        const option = el('option', `${s.origin} · ${s.persona}`);
+        const [platform, messageType] = s.origin.split(':', 2);
+        const name = s.display_name || s.origin;
+        const source = name === s.origin ? name : `${name}（${sessionKinds[messageType] || '会话'} · ${platform}）`;
+        const option = el('option', `${source} · ${s.persona}`);
         option.value = s.id;
         $('scope').append(option);
     });
@@ -255,18 +278,98 @@ async function refresh() {
         const option = el('option', '尚无对话：开始聊天后自动创建');
         option.value = '';
         $('scope').append(option);
-    } else await loadScope();
+    }
+    await loadScope();
     notice(data.last_error || '');
 }
+
+function sessionPicker(key, spec, values, sessions) {
+    const field = el('fieldset', undefined, 'field session-field');
+    const picker = el('details', undefined, 'session-picker');
+    const summary = el('summary');
+    const search = el('input');
+    search.type = 'search';
+    search.placeholder = '搜索群名、昵称、别名或平台';
+    search.setAttribute('aria-label', `搜索${spec.description}`);
+    const results = el('div', undefined, 'session-options');
+    let visibleLimit = 50;
+    const selected = new Set(values);
+    sessionSelections.set(key, selected);
+    const requiredType = {observation_origins: 'GroupMessage', proactive_origins: 'FriendMessage'}[key];
+    const options = new Map(sessions.filter(s => !requiredType || s.message_type === requiredType)
+        .map(s => [s.umo, s]));
+    for (const umo of selected) {
+        if (!options.has(umo)) {
+            options.set(umo, {umo, display_name: umo, message_type: umo.split(':', 2)[1], savedOnly: true});
+        }
+    }
+    const updateSummary = () => {
+        summary.textContent = selected.size ? `选择会话 · 已选 ${selected.size} 个` : '选择会话';
+    };
+    function renderOptions() {
+        const query = search.value.trim().toLowerCase();
+        const matches = [...options.values()].filter(session =>
+            [session.display_name, session.auto_name, session.user_alias, session.umo, session.platform]
+                .some(value => value?.toLowerCase().includes(query))
+        );
+        matches.sort((a, b) => Number(selected.has(b.umo)) - Number(selected.has(a.umo)));
+        results.replaceChildren();
+        for (const session of matches.slice(0, visibleLimit)) {
+            const row = el('label', undefined, 'session-option');
+            const check = el('input');
+            check.type = 'checkbox';
+            check.checked = selected.has(session.umo);
+            check.addEventListener('change', () => {
+                if (check.checked) selected.add(session.umo);
+                else selected.delete(session.umo);
+                updateSummary();
+            });
+            const name = el('span', session.display_name);
+            const kind = sessionKinds[session.message_type] || (session.savedOnly ? '原有配置' : '会话');
+            name.append(el('small', [kind, session.platform, session.session_id].filter(Boolean).join(' · ')));
+            row.title = session.umo;
+            row.append(check, name);
+            results.append(row);
+        }
+        if (!matches.length) {
+            empty(results, query ? '没有匹配的会话。' : '暂无会话，先在 AstrBot 中与目标会话互动。');
+        } else if (matches.length > visibleLimit) {
+            const more = el('button', `显示更多（共 ${matches.length} 项）`);
+            more.type = 'button';
+            more.onclick = () => {
+                visibleLimit += 50;
+                renderOptions();
+            };
+            results.append(more);
+        }
+    }
+    search.addEventListener('input', () => {
+        visibleLimit = 50;
+        renderOptions();
+    });
+    picker.addEventListener('toggle', () => {
+        if (picker.open) renderOptions();
+    });
+    updateSummary();
+    picker.append(summary, search, results);
+    field.append(el('legend', spec.description), picker, el('small', spec.hint));
+    return field;
+}
+
 async function settings() {
-    const data = await bridge.apiGet('settings');
+    const [data, catalog] = await Promise.all([bridge.apiGet('settings'), bridge.apiGet('sessions')]);
     schema = data.schema;
-    values = data.values;
+    const values = data.values;
+    savedSettings = values;
     $('settings-form').replaceChildren();
     const advanced = el('details', undefined, 'advanced-settings');
     advanced.append(el('summary', '更多设置：记忆容量、保留时间与后台参数'));
     const advancedKeys = new Set(['analysis_timeout_seconds', 'queue_limit', 'recall_limit', 'context_char_limit', 'raw_retention_days', 'reflection_batch_turns', 'reflection_max_wait_minutes', 'interop_gap_minutes']);
     for (const [key, spec] of Object.entries(schema)) {
+        if (spec._special === 'umo') {
+            $('settings-form').append(sessionPicker(key, spec, values[key], catalog.sessions));
+            continue;
+        }
         const field = el('div', undefined, 'field'),
             label = el('label', spec.description),
             input = document.createElement(['text', 'list'].includes(spec.type) ? 'textarea' : 'input');
@@ -279,8 +382,10 @@ async function settings() {
         } else if (['int', 'float'].includes(spec.type)) {
             input.type = 'number';
             input.value = values[key];
-            input.min = spec.slider?.min;
-            input.max = spec.slider?.max;
+            if (spec.slider) {
+                input.min = spec.slider.min;
+                input.max = spec.slider.max;
+            }
             input.step = spec.type === 'int' ? '1' : String(spec.slider?.step || .1);
         } else {
             input.value = spec.type === 'list' ? values[key].join('\n') : values[key];
@@ -290,32 +395,62 @@ async function settings() {
         (advancedKeys.has(key) ? advanced : $('settings-form')).append(field);
     }
     $('settings-form').append(advanced);
+    $('save').disabled = false;
 }
 document.querySelectorAll('[data-tab]').forEach(button => button.addEventListener('click', () => {
     document.querySelectorAll('.panel').forEach(panel => panel.hidden = panel.id !== button.dataset.tab);
     document.querySelectorAll('[data-tab]').forEach(b => b.classList.toggle('active', b === button));
+    $('refresh').hidden = button.dataset.tab === 'settings';
+    if (bridge && button.dataset.tab === 'settings' && !settingsRequest) {
+        settingsRequest = settings().catch(error => {
+            settingsRequest = undefined;
+            notice(error.message, true);
+        });
+    }
 }));
 $('refresh').onclick = () => action(refresh);
+$('settings-form').onsubmit = event => event.preventDefault();
 $('scope').onchange = () => action(loadScope);
 $('search').onclick = () => action(loadScope);
 $('query').onkeydown = event => {
     if (event.key === 'Enter') action(loadScope);
 };
 $('save').onclick = () => action(async () => {
+    $('save').disabled = true;
+    try {
+        await saveSettings();
+    } finally {
+        $('save').disabled = false;
+    }
+});
+async function saveSettings() {
     const update = {};
     for (const [key, spec] of Object.entries(schema)) {
+        if (sessionSelections.has(key)) {
+            update[key] = [...sessionSelections.get(key)];
+            continue;
+        }
         const input = $('setting-' + key);
         update[key] = spec.type === 'bool' ? input.checked : ['int', 'float'].includes(spec.type) ? Number(input.value) : spec.type === 'list' ? input.value.split('\n').map(s => s.trim()).filter(Boolean) : input.value;
     }
+    for (const key of Object.keys(update)) {
+        if (JSON.stringify(update[key]) === JSON.stringify(savedSettings[key])) delete update[key];
+    }
+    if (!Object.keys(update).length) {
+        notice('没有需要保存的更改。');
+        return;
+    }
     await bridge.apiPost('settings', update);
+    Object.assign(savedSettings, update);
     notice('配置已保存，后续对话与后台任务使用新设置。');
-});
+}
 document.querySelectorAll('[data-action]').forEach(button => button.onclick = () => action(async () => {
-    if (!selected()) return;
+    const scope = selected();
+    if (!scope) return;
     const op = button.dataset.action;
-    if (op === 'clear_confirm' && !confirm('永久删除选定会话和人格的全部记忆、关系、好感与待解问题？')) return;
+    if (op === 'clear_confirm' && !await confirmDeletion('将永久删除此会话和人格的全部记忆、关系、好感和待解问题。')) return;
     await bridge.apiPost('control', {
-        scope: selected(),
+        scope,
         action: op
     });
     await refresh();
@@ -327,6 +462,5 @@ if (!bridge) {
     await action(async () => {
         await bridge.ready();
         await refresh();
-        await settings();
     });
 }

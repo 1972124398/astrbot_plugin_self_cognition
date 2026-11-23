@@ -81,6 +81,7 @@ class SelfCognition(Star):
         self.front_origins = {}
         self.provider_cache = {}
         self.wake = asyncio.Event()
+        self.settings_lock = asyncio.Lock()
         self.last_error = ""
         self.schema = json.loads((Path(__file__).parent / "_conf_schema.json").read_text(encoding="utf-8"))
         # Views are optional: older supported AstrBot versions still have schema UI.
@@ -93,6 +94,7 @@ class SelfCognition(Star):
             for endpoint, method, handler in (
                 ("overview", "GET", self.page_overview),
                 ("scope", "GET", self.page_scope),
+                ("sessions", "GET", self.page_sessions),
                 ("settings", "GET", self.page_settings),
                 ("settings", "POST", self.save_settings),
                 ("forget", "POST", self.page_forget),
@@ -839,15 +841,22 @@ class SelfCognition(Star):
 
     async def page_overview(self):
         from astrbot.api.web import error_response, json_response, request
+        from astrbot.core.umo_alias import serialize_umo_alias
 
         if not request.username:
             return error_response("需要登录 AstrBot 管理面板", status_code=401)
-        return json_response(
-            {
-                "scopes": await self.memory.call(self.store.overview),
-                "last_error": self.last_error,
-            }
-        )
+        scopes = await self.memory.call(self.store.overview)
+        if scopes:
+            origins = list({scope["origin"] for scope in scopes})
+            try:
+                aliases = {alias.umo: alias for alias in await self.context.get_db().get_umo_aliases(origins)}
+            except Exception:
+                logger.exception("自主认知读取会话名称失败")
+            else:
+                for scope in scopes:
+                    origin = scope["origin"]
+                    scope["display_name"] = serialize_umo_alias(aliases.get(origin), origin)["display_name"]
+        return json_response({"scopes": scopes, "last_error": self.last_error})
 
     async def page_scope(self):
         from astrbot.api.web import error_response, json_response, request
@@ -869,6 +878,22 @@ class SelfCognition(Star):
             {"schema": self.schema, "values": {k: self.config.get(k, v.get("default")) for k, v in self.schema.items()}}
         )
 
+    async def page_sessions(self):
+        from astrbot.api.web import error_response, json_response, request
+
+        if not request.username:
+            return error_response("需要登录", status_code=401)
+        try:
+            from astrbot.dashboard.services.session_management_service import SessionManagementService
+
+            # Use the native UMO picker's catalog. Listing needs only the database.
+            service = SessionManagementService(core_lifecycle=None, db_helper=self.context.get_db())
+            sessions = (await service.list_active_umos())["umo_infos"]
+        except Exception:
+            logger.exception("自主认知读取 AstrBot 会话列表失败")
+            return error_response("读取会话失败，请重试或在 AstrBot 插件配置中选择会话。", status_code=503)
+        return json_response({"sessions": sessions})
+
     async def save_settings(self):
         from astrbot.api.web import error_response, json_response, request
 
@@ -879,14 +904,15 @@ class SelfCognition(Star):
             self.validate_settings(values)
         except ValueError as error:
             return error_response(str(error))
-        previous = dict(self.config)
-        try:
-            self.config.update(values)
-            await asyncio.to_thread(self.config.save_config)
-        except Exception:
-            self.config.clear()
-            self.config.update(previous)
-            return error_response("配置保存失败", status_code=500)
+        async with self.settings_lock:
+            previous = dict(self.config)
+            try:
+                self.config.update(values)
+                await asyncio.to_thread(self.config.save_config)
+            except Exception:
+                self.config.clear()
+                self.config.update(previous)
+                return error_response("配置保存失败", status_code=500)
         self.wake.set()
         return json_response({"saved": True})
 

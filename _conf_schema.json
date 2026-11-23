@@ -5,10 +5,11 @@
     "default": true
   },
   "allowed_origins": {
-    "description": "启用会话 UMO 白名单",
+    "description": "会话白名单",
     "type": "list",
     "default": [],
-    "hint": "留空允许所有已启用本插件的会话。使用 /cognition 获取 UMO。人格与会话分别保存记忆，群内成员通过发送者 ID 区分。"
+    "_special": "umo",
+    "hint": "按群名、昵称或别名选择群聊和私聊。留空允许所有已启用本插件的会话。"
   },
   "analysis_provider_id": {
     "description": "后台认知整理模型",
@@ -86,13 +87,14 @@
     "description": "允许空闲时主动联系",
     "type": "bool",
     "default": false,
-    "hint": "根据关心、约定、分享欲或好奇心组织自然表达，没到时机就等待；还需填写允许联系的私聊 UMO。"
+    "hint": "根据关心、约定、分享欲或好奇心组织自然表达。还需选择允许联系的私聊。"
   },
   "proactive_origins": {
-    "description": "允许主动联系的私聊 UMO",
+    "description": "允许主动联系的私聊",
     "type": "list",
     "default": [],
-    "hint": "逐行填写完整 UMO。开启主动联系并有自然想说的事时才会考虑，角色仍可选择不联系。"
+    "_special": "umo",
+    "hint": "选择私聊会话。开启主动联系并有自然想说的事时才会考虑。"
   },
   "proactive_gap_hours": {
     "description": "主动提问最小间隔（小时）",
@@ -214,9 +216,10 @@
     }
   },
   "observation_origins": {
-    "description": "允许安静观察群聊的 UMO",
+    "description": "允许安静观察的群聊",
     "type": "list",
     "default": [],
-    "hint": "可选。填写后，群里未叫机器人的交谈也可在后台组成共同经历，不主动插话。需先与此群当前人格聊过一次；存在多个人格且无法确定时跳过。留空只记与自己的互动。"
+    "_special": "umo",
+    "hint": "选择群聊后，未叫机器人的交谈也可在后台组成共同经历。需先与群里使用当前人格的机器人聊过一次。留空只记与自己的互动。"
   }
 }

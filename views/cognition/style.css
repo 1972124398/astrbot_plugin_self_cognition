@@ -53,12 +53,6 @@ p {
     margin: 6px 0
 }
 
-.eyebrow {
-    font-size: 11px;
-    letter-spacing: 2.2px;
-    color: var(--accent)
-}
-
 button,
 input,
 select,
@@ -292,8 +286,7 @@ article {
     margin: 22px 0
 }
 
-.actions span,
-footer {
+.actions span {
     font-size: 11px;
     color: var(--muted)
 }
@@ -367,9 +360,64 @@ footer {
     resize: vertical
 }
 
-footer {
-    text-align: center;
-    margin: 32px 0 0
+.session-field {
+    margin: 12px 0;
+    padding: 12px;
+    min-width: 0;
+    border: 1px solid var(--line);
+    border-radius: 9px;
+}
+
+.session-field legend {
+    padding: 0 5px;
+    font-size: 14px;
+}
+
+.session-picker summary {
+    padding: 8px 0;
+    color: var(--accent);
+    cursor: pointer;
+}
+
+.session-picker input[type=search] {
+    margin: 4px 0 8px;
+}
+
+.session-options {
+    max-height: 220px;
+    overflow-y: auto;
+    margin-bottom: 8px;
+}
+
+.session-field .session-option {
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+    gap: 10px;
+    padding: 8px 4px;
+    border-bottom: 1px solid var(--line);
+    cursor: pointer;
+    overflow-wrap: anywhere;
+}
+
+.session-option small {
+    display: block;
+}
+
+dialog {
+    max-width: min(480px, calc(100vw - 32px));
+    padding: 24px;
+    color: inherit;
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+}
+
+dialog::backdrop {
+    background: #14251f80;
+}
+
+dialog .actions {
+    margin-bottom: 0;
 }
 
 @media(max-width:800px) {

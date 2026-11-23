@@ -12,8 +12,9 @@ from unittest.mock import AsyncMock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from astrbot.api.provider import ProviderRequest
 from astrbot.api.message_components import At
-from astrbot_plugin_self_cognition.cognition import actor_key
+from astrbot_plugin_self_cognition.cognition import actor_key, scope_key
 from astrbot.api.web import PluginRequest, bind_request_context
+from astrbot.core.db.sqlite import SQLiteDatabase
 from starlette.requests import Request
 from astrbot.core.message.message_event_result import MessageEventResult, ResultContentType
 from astrbot_plugin_self_cognition.main import SelfCognition, TURN
@@ -55,6 +56,7 @@ class Config(dict):
 class Hooks(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
         self.stars = {}
         self.context = SimpleNamespace(
             get_config=lambda **_: {"plugin_set": ["*"]},
@@ -72,7 +74,6 @@ class Hooks(unittest.IsolatedAsyncioTestCase):
 
     async def asyncTearDown(self):
         await self.plugin.terminate()
-        self.temp.cleanup()
 
     async def prepare(self, event=None):
         event = event or Event()
@@ -316,6 +317,8 @@ class Hooks(unittest.IsolatedAsyncioTestCase):
         with bind_request_context(PluginRequest(req, username=None)):
             response = await self.plugin.page_overview()
             self.assertEqual(response.status_code, 401)
+            response = await self.plugin.page_sessions()
+            self.assertEqual(response.status_code, 401)
         with bind_request_context(PluginRequest(req, username="admin")):
             response = await self.plugin.page_settings()
             self.assertIn("schema", json.loads(response.body))
@@ -328,6 +331,45 @@ class Hooks(unittest.IsolatedAsyncioTestCase):
         ):
             with self.assertRaises(ValueError):
                 self.plugin.validate_settings(value)
+
+    async def test_view_uses_astrbot_session_names_and_preserves_configured_origins(self):
+        friend = Event.unified_msg_origin
+        group = "test:GroupMessage:book-club"
+        legacy = "test:group:old-club"
+        database = SQLiteDatabase(str(Path(self.temp.name) / "astrbot.sqlite3"))
+        self.addAsyncCleanup(database.engine.dispose)
+        await database.initialize()
+        await database.upsert_umo_alias(friend, "alice", "Alice", "老朋友")
+        await database.upsert_umo_alias(group, "alice", "读书会", None)
+        self.context.get_db = lambda: database
+        self.plugin.config["allowed_origins"] = [legacy]
+        await self.plugin.memory.call(self.plugin.store.ensure_scope, scope_key(friend, "friend"), friend, "friend")
+
+        req = Request({"type": "http", "method": "GET", "path": "/", "query_string": b"", "headers": []})
+        with bind_request_context(PluginRequest(req, username="admin")):
+            response = await self.plugin.page_sessions()
+            catalog = {item["umo"]: item for item in json.loads(response.body)["sessions"]}
+            self.assertEqual(catalog[friend]["display_name"], "老朋友")
+            self.assertEqual(catalog[group]["message_type"], "GroupMessage")
+            response = await self.plugin.page_overview()
+            self.assertEqual(json.loads(response.body)["scopes"][0]["display_name"], "老朋友")
+            response = await self.plugin.page_settings()
+            settings = json.loads(response.body)
+            self.assertEqual(settings["schema"]["allowed_origins"]["_special"], "umo")
+            self.assertEqual(settings["values"]["allowed_origins"], [legacy])
+
+        async def receive():
+            return {"type": "http.request", "body": json.dumps({"allowed_origins": [legacy, group]}).encode()}
+
+        req = Request({"type": "http", "method": "POST", "path": "/", "query_string": b"", "headers": []}, receive=receive)
+        with bind_request_context(PluginRequest(req, username="admin")):
+            response = await self.plugin.save_settings()
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(self.plugin.config.saved)
+        self.assertEqual(self.plugin.config["allowed_origins"], [legacy, group])
+        self.assertTrue(self.plugin.allowed(group))
+        self.assertTrue(self.plugin.allowed("test:GroupMessage:old-club"))
+        self.assertFalse(self.plugin.allowed(friend))
 
     async def test_group_mention_connects_relationship_tags_to_actual_member(self):
         event = Event("这是我的同事，也是一位老朋友。")
