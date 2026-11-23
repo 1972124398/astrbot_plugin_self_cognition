@@ -5,7 +5,7 @@ import unittest
 from types import SimpleNamespace
 
 import test_hooks as fixtures
-from astrbot_plugin_self_cognition.cognition import living_context, parse_reflection
+from astrbot_plugin_self_cognition.cognition import living_context, parse_reflection, choose_initiative
 from astrbot_plugin_self_cognition.memory import Memory
 
 
@@ -87,6 +87,14 @@ class RecallSelectionTests(unittest.TestCase):
         )
         self.assertEqual(plain["intentions"][0]["kind"], "thought")
 
+    def test_wait_with_explanation_stays_silent_without_blocking_normal_prose(self):
+        choices = [{"choice": "intention:1", "id": 1}]
+        for reply in ("WAIT", "WAIT: no suitable topic", "WAIT：现在没什么想说的", "wait\nnot now", "WAIT."):
+            self.assertEqual(choose_initiative(reply, choices), (None, ""))
+        selected, message = choose_initiative("Wait, I just remembered that story.", choices)
+        self.assertEqual(selected["id"], 1)
+        self.assertEqual(message, "Wait, I just remembered that story.")
+
 
 class ActualPersonaTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
@@ -146,3 +154,32 @@ class ActualPersonaTests(unittest.IsolatedAsyncioTestCase):
         )
         event.set_extra("enable_default_system_prompt", False)
         self.assertEqual(self.plugin.persona_prompt(event, SimpleNamespace(system_prompt="其他资料")), "")
+
+    async def test_queued_reflection_uses_current_persona_after_prompt_edit(self):
+        original, _ = await self.case.exchange()
+        job = dict(original.get_extra(fixtures.TURN), id="queued-old-persona", reply="旧回复。")
+        await self.plugin.memory.call(self.plugin.store.enqueue, job)
+        self.context.persona_manager.get_persona_v3_by_id = lambda _: {"prompt": "现在只对古籍感兴趣，寡言。"}
+        self.context.llm_generate.return_value = SimpleNamespace(completion_text="{}")
+        self.assertTrue(await self.plugin.process(job))
+        payload = json.loads(self.context.llm_generate.call_args.kwargs["prompt"])
+        self.assertEqual(payload["persona"], "现在只对古籍感兴趣，寡言。")
+
+    async def test_prompt_changed_during_inference_does_not_write_late_old_impression(self):
+        original, _ = await self.case.exchange()
+        job = dict(original.get_extra(fixtures.TURN), id="in-flight-persona", reply="回复。")
+        await self.plugin.memory.call(self.plugin.store.enqueue, job)
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def provider(**kwargs):
+            entered.set()
+            await release.wait()
+            return SimpleNamespace(completion_text='{"self_reflection":"old persona conclusion"}')
+
+        self.context.llm_generate.side_effect = provider
+        operation = asyncio.create_task(self.plugin.process(job))
+        await entered.wait()
+        self.context.persona_manager.get_persona_v3_by_id = lambda _: {"prompt": "New actual persona"}
+        release.set()
+        self.assertFalse(await operation)
+        self.assertNotIn("old persona conclusion", str(self.plugin.memory.recall(job["scope"])))

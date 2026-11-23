@@ -243,7 +243,7 @@ class Store(LifeStore):
                     "ON CONFLICT(scope,id) DO UPDATE SET name=excluded.name",
                     [(job["scope"], e["id"], e["name"]) for e in job.get("mentioned_users", [])],
                 )
-        if job.get("persona"):
+        if "persona" in job:
             with self.db:
                 self.db.execute("UPDATE scopes SET persona_prompt=? WHERE id=?", (job["persona"], job["scope"]))
         if activity_only:

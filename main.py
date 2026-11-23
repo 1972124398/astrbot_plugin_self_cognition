@@ -473,6 +473,13 @@ class SelfCognition(Star):
         payload = {
             key: job.get(key) for key in ("human", "reply", "turns", "persona", "source_kind", "name", "captured")
         }
+        persona = state["persona"]
+        if persona not in {"default", "_chatui_default_", "[%None]"}:
+            current = self.context.persona_manager.get_persona_v3_by_id(persona)
+            payload["persona"] = text(current.get("prompt"), 12000) if current else ""
+        else:
+            payload["persona"] = state.get("persona_prompt", job.get("persona", ""))
+        prompt_used = payload["persona"]
         payload["known"] = recalled
         payload["mentioned_users"] = job.get("mentioned_users", [])
         payload["speakers"] = job.get("speakers", [{"id": job["actor"], "name": job["name"]}])
@@ -490,6 +497,10 @@ class SelfCognition(Star):
             )
         if not self.allowed(job["origin"]):
             return False
+        if persona not in {"default", "_chatui_default_", "[%None]"}:
+            current = self.context.persona_manager.get_persona_v3_by_id(persona)
+            if (text(current.get("prompt"), 12000) if current else "") != prompt_used:
+                return False
         result = parse_reflection(
             response.completion_text,
             job["human"],
@@ -611,6 +622,11 @@ class SelfCognition(Star):
             recalled = self.memory.recall(
                 state["id"], question["actor"], " ".join(idea["question"] for idea in choices), 5
             )
+            prompt_now = state.get("persona_prompt", "")
+            persona_id = state["persona"]
+            if persona_id not in {"default", "_chatui_default_", "[%None]"}:
+                current = self.context.persona_manager.get_persona_v3_by_id(persona_id)
+                prompt_now = text(current.get("prompt"), 12000) if current else ""
             recalled["intentions"] = [idea for idea in recalled["intentions"] if idea["status"] != "pending"]
             if not self.config.get("curiosity_enabled", True):
                 recalled["curiosity"] = []
@@ -622,7 +638,7 @@ class SelfCognition(Star):
                         system_prompt=INITIATIVE_SYSTEM,
                         prompt=json.dumps(
                             {
-                                "persona": state.get("persona_prompt", ""),
+                                "persona": prompt_now,
                                 "memory": recalled,
                                 "choices": choices,
                                 "now": datetime.now(
@@ -640,6 +656,10 @@ class SelfCognition(Star):
                 self.initiative_wait[state["id"]] = now + 3600
                 return
             current = await self.memory.call(self.store.scope, state["id"])
+            if persona_id not in {"default", "_chatui_default_", "[%None]"}:
+                persona = self.context.persona_manager.get_persona_v3_by_id(persona_id)
+                if (text(persona.get("prompt"), 12000) if persona else "") != prompt_now:
+                    return
             if (
                 not current
                 or current["no_contact"]

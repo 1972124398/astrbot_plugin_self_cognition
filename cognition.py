@@ -449,7 +449,7 @@ memory 是旧经历。可以分享自己的事、接着玩、说一句，或都�
 
 def choose_initiative(raw, choices):
     message = text(raw, 4000)
-    if not message or message.upper() == "WAIT":
+    if not message or re.match(r"^WAIT(?:$|\s*[:：—–-]|[\r\n]|[.!。！]\s*$)", message, re.IGNORECASE):
         return None, ""
     if message.startswith("```"):
         message = re.sub(r"^```(?:json)?\s*|\s*```$", "", message)
