@@ -143,6 +143,21 @@ class SelfCognition(Star):
                 return text(value.get("prompt"), 12000)
         return text(request.system_prompt, 12000)
 
+    async def command_identity(self, event):
+        if event.get_extra("_trace_persona_id") is None:
+            manager = self.context.conversation_manager
+            origin = str(event.unified_msg_origin)
+            conversation_id = await manager.get_curr_conversation_id(origin)
+            conversation = await manager.get_conversation(origin, conversation_id) if conversation_id else None
+            persona_id, _, _, _ = await self.context.persona_manager.resolve_selected_persona(
+                umo=origin,
+                conversation_persona_id=conversation.persona_id if conversation else None,
+                platform_name=event.get_platform_name(),
+                provider_settings=self.context.get_config(umo=origin).get("provider_settings", {}),
+            )
+            event.set_extra("_trace_persona_id", persona_id)
+        return self.identity(event)
+
     def expression_preferences(self):
         value = text(self.config.get("behavior_preferences"), 1000)
         # Older releases supplied an opinionated default. Leave custom preferences intact.
@@ -753,7 +768,7 @@ class SelfCognition(Star):
 
     @filter.command("cognition", alias={"自主认知"})
     async def status(self, event: AstrMessageEvent):
-        scope, actor, _, state = self.identity(event)
+        scope, actor, _, state = await self.command_identity(event)
         if not self.allowed(event.unified_msg_origin):
             yield event.plain_result("自主认知未在此会话启用。")
             return
@@ -770,7 +785,7 @@ class SelfCognition(Star):
     async def recall(self, event: AstrMessageEvent, query: str = ""):
         if not self.allowed(event.unified_msg_origin):
             return
-        scope, actor, _, state = self.identity(event)
+        scope, actor, _, state = await self.command_identity(event)
         if state["paused"]:
             yield event.plain_result("此会话的自主认知已暂停。")
             return
@@ -783,7 +798,7 @@ class SelfCognition(Star):
     @filter.command("cognition_control")
     @filter.permission_type(filter.PermissionType.ADMIN)
     async def control(self, event: AstrMessageEvent, action: str = ""):
-        scope, _, _, _ = self.identity(event)
+        scope, _, _, _ = await self.command_identity(event)
         if action not in {"pause", "resume", "retry", "clear_confirm"}:
             yield event.plain_result(
                 "/cognition_control pause|resume|retry|clear_confirm（最后一项删除本会话人格的全部认知）"
@@ -797,7 +812,7 @@ class SelfCognition(Star):
         if ":GroupMessage:" in str(event.unified_msg_origin) or mode not in {"on", "off"}:
             yield event.plain_result("私聊中使用 /cognition_contact off 关闭主动提问，on 恢复（仍需管理员配置允许）。")
             return
-        scope, _, _, _ = self.identity(event)
+        scope, _, _, _ = await self.command_identity(event)
         await self.memory.call(
             self.store.ensure_scope, scope, event.unified_msg_origin, self.memory.states[scope]["persona"]
         )

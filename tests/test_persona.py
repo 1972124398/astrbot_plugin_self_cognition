@@ -2,6 +2,7 @@ import asyncio
 import json
 import time
 import unittest
+from unittest.mock import AsyncMock
 from types import SimpleNamespace
 
 import test_hooks as fixtures
@@ -183,3 +184,18 @@ class ActualPersonaTests(unittest.IsolatedAsyncioTestCase):
         release.set()
         self.assertFalse(await operation)
         self.assertNotIn("old persona conclusion", str(self.plugin.memory.recall(job["scope"])))
+
+    async def test_command_resolves_same_selected_persona_as_chat_before_llm_trace_exists(self):
+        event, _ = await self.case.exchange()
+        expected = event.get_extra(fixtures.TURN)["scope"]
+        command = fixtures.Event("/cognition")
+        command.extras.pop("_trace_persona_id")
+        command.get_platform_name = lambda: "test"
+        self.context.conversation_manager = SimpleNamespace(
+            get_curr_conversation_id=AsyncMock(return_value="conversation"),
+            get_conversation=AsyncMock(return_value=SimpleNamespace(persona_id="friend")),
+        )
+        self.context.persona_manager.resolve_selected_persona = AsyncMock(return_value=("friend", {}, None, False))
+        actual, _, _, _ = await self.plugin.command_identity(command)
+        self.assertEqual(actual, expected)
+        self.assertEqual(command.get_extra("_trace_persona_id"), "friend")
