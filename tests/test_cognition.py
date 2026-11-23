@@ -2,6 +2,7 @@ import json
 import sys
 import tempfile
 import unittest
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -63,11 +64,11 @@ class StoreTests(unittest.TestCase):
         job.update(changes)
         return job
 
-    def apply(self, name="one", data=None, now=1800000000, cap=10):
+    def apply(self, name="one", data=None, now=1800000000):
         job = self.job(name)
         self.store.enqueue(job)
         result = parse_reflection(json.dumps(data or reflection(), ensure_ascii=False), HUMAN)
-        self.assertTrue(self.store.apply(job, result, cap, now))
+        self.assertTrue(self.store.apply(job, result, now=now))
         return job, result
 
     def test_replay_does_not_double_affection(self):
@@ -83,12 +84,12 @@ class StoreTests(unittest.TestCase):
         self.store = Store(self.path)
         self.assertEqual(self.store.context(self.scope, self.actor)["feeling"]["affection"], 3)
 
-    def test_daily_cap_and_next_day(self):
+    def test_affection_accumulates_without_daily_quota(self):
         for i in range(7):
             self.apply(str(i))
-        self.assertEqual(self.store.context(self.scope, self.actor)["feeling"]["affection"], 10)
+        self.assertEqual(self.store.context(self.scope, self.actor)["feeling"]["affection"], 21)
         self.apply("tomorrow", now=1800000000 + 86400)
-        self.assertEqual(self.store.context(self.scope, self.actor)["feeling"]["affection"], 13)
+        self.assertEqual(self.store.context(self.scope, self.actor)["feeling"]["affection"], 24)
 
     def test_trust_can_fall_without_erasing_affection(self):
         self.apply()
@@ -186,6 +187,45 @@ class StoreTests(unittest.TestCase):
         with self.assertRaises(OverflowError):
             self.store.enqueue(self.job("other"), 1)
         self.assertEqual(self.store.next_job(3000000000)["id"], "one")
+
+    def test_continuous_dialogue_is_reflected_as_one_experience(self):
+        self.store.enqueue(self.job("one"))
+        self.store.enqueue(self.job("two", human="最近在练琴，有点难。"))
+        self.assertIsNone(self.store.next_batch(time.time(), [self.scope], 45, 3))
+        self.store.enqueue(self.job("three", human="谢谢你一直记得我的事，今天练完了。"))
+        batch = self.store.next_batch(time.time(), [self.scope], 45, 3)
+        self.assertEqual(len(batch["turns"]), 3)
+        data = reflection()
+        data["portrait"] = {
+            "impression": "会认真练习，也愿意分享一点小进步。",
+            "shared_story": "一起聊过练琴的挫折和坚持。",
+        }
+        data["self_reflection"] = "我发现自己会惦记对方练到哪里，不必每次都催问。"
+        result = parse_reflection(json.dumps(data, ensure_ascii=False), batch["human"])
+        self.assertTrue(self.store.apply(batch, result))
+        self.assertIsNone(self.store.next_job(time.time()))
+        self.assertEqual(self.store.stats(self.scope)["feelings"], 1)
+        self.assertEqual(
+            self.store.dashboard(self.scope)["portraits"][self.actor]["shared_story"], data["portrait"]["shared_story"]
+        )
+
+    def test_old_installation_keeps_memories_when_upgraded(self):
+        self.apply()
+        with self.store.db:
+            self.store.db.execute("ALTER TABLE scopes DROP COLUMN persona_prompt")
+            self.store.db.execute("DROP TABLE portraits")
+            self.store.db.execute("PRAGMA user_version=1")
+        self.store.close()
+        self.store = Store(self.path)
+        self.assertEqual(self.store.context(self.scope, self.actor)["feeling"]["affection"], 3)
+        self.assertEqual(self.store.scope(self.scope)["persona_prompt"], "")
+
+    def test_maximum_wait_prevents_endless_deferral(self):
+        self.store.enqueue(self.job("older"))
+        with self.store.db:
+            self.store.db.execute("UPDATE jobs SET created=? WHERE id='older'", (time.time() - 601,))
+        self.store.enqueue(self.job("newer"))
+        self.assertIsNotNone(self.store.next_batch(time.time(), [self.scope], 300, 30, 600))
 
     def test_relation_direction_is_not_auto_reversed(self):
         self.apply()

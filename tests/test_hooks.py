@@ -3,6 +3,7 @@ import json
 import sys
 import tempfile
 import time
+import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -65,7 +66,7 @@ class Hooks(unittest.IsolatedAsyncioTestCase):
             send_message=AsyncMock(return_value=True),
         )
         with patch("astrbot_plugin_self_cognition.main.StarTools.get_data_dir", return_value=Path(self.temp.name)):
-            self.plugin = SelfCognition(self.context, Config())
+            self.plugin = SelfCognition(self.context, Config(behavior_preferences="按自己的性格自然相处"))
 
     async def asyncTearDown(self):
         await self.plugin.terminate()
@@ -81,11 +82,14 @@ class Hooks(unittest.IsolatedAsyncioTestCase):
         event, request = await self.prepare()
         await self.plugin.response(event, SimpleNamespace(completion_text="我记得。", tools_call_args=[]))
         await self.plugin.delivered(event)
+        await self.plugin.capture_queue.join()
         # Exercise the same durable job path as the worker, without a timing race.
         if self.plugin.worker:
             self.plugin.worker.cancel()
             await asyncio.gather(self.plugin.worker, return_exceptions=True)
-        job = self.plugin.store.next_job(time.time() + 1)
+        job = await self.plugin.memory.call(
+            self.plugin.store.next_batch, time.time() + 1, [event.get_extra(TURN)["scope"]], 0
+        )
         if job:
             await self.plugin.process(job)
         return event, request
@@ -128,14 +132,17 @@ class Hooks(unittest.IsolatedAsyncioTestCase):
     async def test_streaming_agent_completion_commits_without_after_sent_hook(self):
         event, _ = await self.prepare()
         event.get_result = lambda: MessageEventResult(result_content_type=ResultContentType.STREAMING_RESULT)
-        self.plugin.ensure_worker = lambda: None
         response = SimpleNamespace(completion_text="我记得。", tools_call_args=[], role="assistant")
         await self.plugin.agent_done(event, None, response)
         await self.plugin.agent_done(event, None, response)
+        await self.plugin.capture_queue.join()
         self.assertEqual(self.plugin.store.stats(event.get_extra(TURN)["scope"])["pending"], 1)
 
     async def test_clear_while_provider_inflight(self):
         event, _ = await self.prepare()
+        await self.plugin.capture_queue.join()
+        self.plugin.worker.cancel()
+        await asyncio.gather(self.plugin.worker, return_exceptions=True)
         job = event.get_extra(TURN)
         job["reply"] = "reply"
         self.plugin.store.enqueue(job)
@@ -165,10 +172,104 @@ class Hooks(unittest.IsolatedAsyncioTestCase):
         self.plugin.config.update(
             proactive_enabled=True, proactive_origins=[event.unified_msg_origin], quiet_start=0, quiet_end=0
         )
+        self.context.llm_generate.return_value = SimpleNamespace(completion_text="上次说在练琴，最近练得怎么样？")
         await self.plugin.curiosity_step(state)
         self.context.send_message.assert_awaited_once()
+        self.assertIn(
+            "最近练得怎么样",
+            self.plugin.memory.recall(scope, event.get_extra(TURN)["actor"])["portrait"]["last_outreach"],
+        )
         await self.plugin.curiosity_step(self.plugin.store.scope(scope))
         self.context.send_message.assert_awaited_once()
+
+    async def test_frontend_reads_natural_cached_impressions_without_database(self):
+        data = reflection()
+        data["portrait"] = {
+            "impression": "熟悉以后能放松地开玩笑。",
+            "shared_story": "一起聊过练琴。",
+            "style": "不用每次都认真鼓励。",
+        }
+        data["self_reflection"] = "我也有想安静陪着的时候。"
+        self.context.llm_generate.return_value = SimpleNamespace(completion_text=json.dumps(data, ensure_ascii=False))
+        await self.exchange()
+        event = Event("今天继续练琴")
+        event.message_obj.message_id = "next-message"
+        with (
+            patch.object(self.plugin.store, "context", side_effect=AssertionError("front must not read SQLite")),
+            patch.object(self.plugin.store, "ensure_scope", side_effect=AssertionError("front must not write SQLite")),
+        ):
+            _, request = await self.prepare(event)
+            hint = request.extra_user_content_parts[0].text
+        self.assertIn("熟悉以后能放松地开玩笑", hint)
+        self.assertIn("我也有想安静陪着的时候", hint)
+        self.assertNotIn('"affection"', hint)
+        self.assertNotIn('"confidence"', hint)
+        self.assertNotIn("真诚感谢", hint)  # The raw ledger is not part of ordinary chat.
+
+    async def test_slow_storage_keeps_frontend_responsive(self):
+        entered, release = threading.Event(), threading.Event()
+        capture = self.plugin.store.capture
+
+        def slow_capture(*args):
+            entered.set()
+            release.wait(2)
+            return capture(*args)
+
+        with patch.object(self.plugin.store, "capture", side_effect=slow_capture):
+            await self.prepare()
+            for _ in range(100):
+                if entered.is_set():
+                    break
+                await asyncio.sleep(0.005)
+            self.assertTrue(entered.is_set())
+            try:
+                event = Event("先和我聊会儿")
+                event.message_obj.message_id = "new"
+                await asyncio.wait_for(self.prepare(event), 0.2)
+                self.context.llm_generate.assert_not_awaited()
+            finally:
+                release.set()
+            await self.plugin.capture_queue.join()
+
+    async def test_new_chat_interrupts_background_inference_without_losing_batch(self):
+        self.plugin.config["reflection_idle_seconds"] = 0
+        entered, cancelled = asyncio.Event(), asyncio.Event()
+
+        async def provider(**kwargs):
+            entered.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+
+        self.context.llm_generate.side_effect = provider
+        event, _ = await self.prepare()
+        await self.plugin.response(event, SimpleNamespace(completion_text="好呀。", tools_call_args=[]))
+        await self.plugin.delivered(event)
+        await asyncio.wait_for(entered.wait(), 2)
+        next_event = Event("先回复我这个")
+        next_event.message_obj.message_id = "new-turn"
+        await asyncio.wait_for(self.prepare(next_event), 0.2)
+        await asyncio.wait_for(cancelled.wait(), 1)
+        await self.plugin.capture_queue.join()
+        stats = await self.plugin.memory.call(self.plugin.store.stats, event.get_extra(TURN)["scope"])
+        self.assertEqual(stats["pending"], 1)
+        self.assertEqual(stats["failed"], 0)
+
+    async def test_initiative_can_choose_silence_without_repeated_model_calls(self):
+        event, _ = await self.exchange()
+        scope = event.get_extra(TURN)["scope"]
+        self.plugin.store.db.execute("UPDATE scopes SET last_human=? WHERE id=?", (time.time() - 90000, scope))
+        self.plugin.store.db.commit()
+        self.plugin.config.update(
+            proactive_enabled=True, proactive_origins=[event.unified_msg_origin], quiet_start=0, quiet_end=0
+        )
+        self.context.llm_generate.reset_mock()
+        self.context.llm_generate.return_value = SimpleNamespace(completion_text="WAIT")
+        await self.plugin.curiosity_step(self.plugin.store.scope(scope))
+        await self.plugin.curiosity_step(self.plugin.store.scope(scope))
+        self.context.llm_generate.assert_awaited_once()
+        self.context.send_message.assert_not_awaited()
 
     async def test_failed_delivery_does_not_consume_question(self):
         event, _ = await self.exchange()

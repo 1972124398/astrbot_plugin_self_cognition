@@ -1,7 +1,7 @@
 """SQLite journal, revision history and durable reflection queue.
 
-All methods run synchronously on the plugin event loop; no transaction spans an
-await. Each accepted reflection and its deduplication marker commit atomically.
+Runtime callers use Memory.call to keep disk work off the conversation loop.
+Each accepted reflection and its deduplication marker commit atomically.
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ class Store:
     def __init__(self, path):
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        self.db = sqlite3.connect(path, timeout=5)
+        self.db = sqlite3.connect(path, timeout=5, check_same_thread=False)
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA foreign_keys=ON")
@@ -63,8 +63,13 @@ class Store:
           human TEXT NOT NULL, reply TEXT NOT NULL, created REAL NOT NULL);
         CREATE TABLE IF NOT EXISTS snapshot_receipts(
           scope TEXT NOT NULL, id TEXT NOT NULL, PRIMARY KEY(scope,id));
-        PRAGMA user_version=1;
+        CREATE TABLE IF NOT EXISTS portraits(
+          scope TEXT NOT NULL, actor TEXT NOT NULL, content TEXT NOT NULL,
+          updated REAL NOT NULL, PRIMARY KEY(scope,actor));
+        PRAGMA user_version=2;
         """)
+        if "persona_prompt" not in {r[1] for r in self.db.execute("PRAGMA table_info(scopes)")}:
+            self.db.execute("ALTER TABLE scopes ADD COLUMN persona_prompt TEXT NOT NULL DEFAULT ''")
         self.db.commit()
 
     def ensure_scope(self, scope, origin, persona):
@@ -138,17 +143,73 @@ class Store:
         job["attempts"] = row["attempts"]
         return job
 
+    def next_batch(self, now, eligible_scopes, quiet_seconds=45, batch_turns=6, max_wait=600):
+        rows = self.db.execute("SELECT * FROM jobs WHERE state='pending' ORDER BY created LIMIT 1024").fetchall()
+        groups = {}
+        for row in rows:
+            if row["scope"] not in eligible_scopes:
+                continue
+            item = json.loads(row["payload"])
+            key = (
+                row["scope"],
+                item["actor"],
+                item["source_kind"],
+                item.get("provider_id", ""),
+                item.get("persona", ""),
+            )
+            groups.setdefault(key, []).append((row, item))
+        for values in groups.values():
+            if values[0][0]["next_at"] > now:
+                continue
+            first, last = values[0][0], values[-1][0]
+            if (
+                len(values) < batch_turns
+                and now - last["created"] < quiet_seconds
+                and now - first["created"] < max_wait
+            ):
+                continue
+            chosen = values[:12]
+            job = dict(chosen[0][1])
+            job["member_ids"] = [row["id"] for row, _ in chosen]
+            job["turns"] = [{k: item.get(k, "") for k in ("human", "reply", "captured", "name")} for _, item in chosen]
+            job["human"] = "\n".join(item["human"] for _, item in chosen)
+            job["reply"] = "\n".join(item["reply"] for _, item in chosen)
+            job["attempts"] = first["attempts"]
+            return job
+        return None
+
+    def capture(self, job, activity_only=False, queue_limit=256):
+        current = self.ensure_scope(job["scope"], job["origin"], job.get("persona_id", "default"))
+        if current["generation"] != job["generation"] or current["paused"]:
+            return False
+        if job["source_kind"] == "dialogue":
+            self.touch(job["scope"], job["actor"], job["name"], job.get("captured", time.time()))
+        if job.get("persona"):
+            with self.db:
+                self.db.execute("UPDATE scopes SET persona_prompt=? WHERE id=?", (job["persona"], job["scope"]))
+        if activity_only:
+            return True
+        accepted = self.enqueue(job, queue_limit)
+        if accepted:
+            for question in job.get("questions", []):
+                if question["question"] in job["reply"]:
+                    self.mark_question(job["scope"], question["id"], time.time())
+        return accepted
+
     def failed(self, job, now):
         attempts = job["attempts"] + 1
         with self.db:
-            self.db.execute(
+            self.db.executemany(
                 "UPDATE jobs SET attempts=?,next_at=?,state=? WHERE id=?",
-                (
-                    attempts,
-                    now + min(3600, 30 * 2 ** min(attempts, 6)),
-                    "failed" if attempts >= 5 else "pending",
-                    job["id"],
-                ),
+                [
+                    (
+                        attempts,
+                        now + min(3600, 30 * 2 ** min(attempts, 6)),
+                        "failed" if attempts >= 5 else "pending",
+                        member,
+                    )
+                    for member in job.get("member_ids", [job["id"]])
+                ],
             )
 
     def retry_failed(self, scope):
@@ -157,7 +218,7 @@ class Store:
                 "UPDATE jobs SET state='pending',attempts=0,next_at=0 WHERE scope=? AND state='failed'", (scope,)
             )
 
-    def apply(self, job, result, daily_cap=10, now=None):
+    def apply(self, job, result, now=None):
         now = now if now is not None else time.time()
         state = self.scope(job["scope"])
         queued = self.db.execute("SELECT state FROM jobs WHERE id=?", (job["id"],)).fetchone()
@@ -232,11 +293,7 @@ class Store:
                     )
                 entity("$speaker")
                 day = datetime.fromtimestamp(now, timezone.utc).date().isoformat()
-                total = self.db.execute(
-                    "SELECT coalesce(sum(delta),0) FROM feelings WHERE scope=? AND actor=? AND day=?",
-                    (scope, actor, day),
-                ).fetchone()[0]
-                delta = min(result["affection"], max(0, daily_cap - total))
+                delta = result["affection"]
                 self.db.execute(
                     "INSERT INTO feelings VALUES(?,?,?,?,?,?,?,?,?)",
                     (
@@ -269,10 +326,60 @@ class Store:
                         "UPDATE questions SET status='resolved' WHERE scope=? AND actor=? AND question=?",
                         (scope, actor, question),
                     )
-            self.db.execute("UPDATE jobs SET state='done',payload='{}' WHERE id=?", (job["id"],))
+                if result.get("portrait"):
+                    self.save_portrait(scope, actor, result["portrait"], now)
+            if result.get("self_reflection"):
+                self.save_portrait(scope, "self", {"impression": result["self_reflection"]}, now)
+            self.db.executemany(
+                "UPDATE jobs SET state='done',payload='{}' WHERE id=?",
+                [(member,) for member in job.get("member_ids", [job["id"]])],
+            )
             if companion:
                 self.db.execute("INSERT OR IGNORE INTO snapshot_receipts VALUES(?,?)", (scope, job["id"]))
         return True
+
+    def save_portrait(self, scope, actor, changes, now):
+        row = self.db.execute("SELECT content FROM portraits WHERE scope=? AND actor=?", (scope, actor)).fetchone()
+        portrait = json.loads(row[0]) if row else {}
+        portrait.update(changes)
+        self.db.execute(
+            "INSERT INTO portraits VALUES(?,?,?,?) ON CONFLICT(scope,actor) DO UPDATE SET "
+            "content=excluded.content,updated=excluded.updated",
+            (scope, actor, json.dumps(portrait, ensure_ascii=False), now),
+        )
+
+    def read_view(self, scope):
+        from .memory import Memory
+
+        data = self.context(scope, limit=1600)
+        data["all_questions"] = [
+            dict(r)
+            for r in self.db.execute(
+                "SELECT * FROM questions WHERE scope=? AND status='pending' ORDER BY created", (scope,)
+            )
+        ]
+        data["portraits"] = {
+            r["actor"]: json.loads(r["content"])
+            for r in self.db.execute("SELECT * FROM portraits WHERE scope=?", (scope,))
+        }
+        return self.scope(scope), Memory.index(data)
+
+    def dashboard(self, scope, query=""):
+        data = self.context(scope, query=query, limit=30)
+        data["all_questions"] = [
+            dict(r)
+            for r in self.db.execute(
+                "SELECT * FROM questions WHERE scope=? AND status='pending' ORDER BY created LIMIT 50", (scope,)
+            )
+        ]
+        data["portraits"] = {
+            r["actor"]: json.loads(r["content"])
+            for r in self.db.execute("SELECT * FROM portraits WHERE scope=?", (scope,))
+        }
+        return data
+
+    def overview(self):
+        return [{**s, "stats": self.stats(s["id"])} for s in self.scopes()]
 
     def context(self, scope, actor="", query="", limit=10):
         # Mix recent and important memories so old important facts remain retrievable.
@@ -319,7 +426,7 @@ class Store:
             "curiosity": questions,
         }
 
-    def mark_question(self, scope, question_id, now, proactive=False):
+    def mark_question(self, scope, question_id, now, proactive=False, message=""):
         with self.db:
             self.db.execute(
                 "UPDATE questions SET status=? WHERE scope=? AND id=? AND status='pending'",
@@ -327,6 +434,11 @@ class Store:
             )
             if proactive:
                 self.db.execute("UPDATE scopes SET last_sent=? WHERE id=?", (now, scope))
+                row = self.db.execute(
+                    "SELECT actor FROM questions WHERE id=? AND scope=?", (question_id, scope)
+                ).fetchone()
+                if row and message:
+                    self.save_portrait(scope, row[0], {"last_outreach": message}, now)
 
     def pause(self, scope, paused):
         with self.db:
@@ -350,14 +462,33 @@ class Store:
             self.remember_snapshot_receipts(scope)
             self.db.execute("DELETE FROM jobs WHERE scope=?", (scope,))
             self.db.execute("DELETE FROM episodes WHERE scope=?", (scope,))
+            self.db.execute("DELETE FROM portraits WHERE scope=?", (scope,))
         return True
 
     def clear(self, scope):
         with self.db:
             self.remember_snapshot_receipts(scope)
-            for table in ("memories", "entities", "relations", "feelings", "questions", "jobs", "episodes"):
+            for table in (
+                "memories",
+                "entities",
+                "relations",
+                "feelings",
+                "questions",
+                "jobs",
+                "episodes",
+                "portraits",
+            ):
                 self.db.execute(f"DELETE FROM {table} WHERE scope=?", (scope,))
             self.db.execute("UPDATE scopes SET generation=generation+1,last_human=0,last_sent=0 WHERE id=?", (scope,))
+
+    def initiative(self, scope, now):
+        if self.db.execute("SELECT 1 FROM questions WHERE scope=? AND status='sent'", (scope,)).fetchone():
+            return None
+        row = self.db.execute(
+            "SELECT * FROM questions WHERE scope=? AND status='pending' AND created>? ORDER BY created DESC LIMIT 1",
+            (scope, now - 30 * 86400),
+        ).fetchone()
+        return dict(row) if row else None
 
     def remember_snapshot_receipts(self, scope):
         # Retain only content-free fingerprints of externally owned snapshots so a

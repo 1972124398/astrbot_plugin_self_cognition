@@ -151,10 +151,22 @@ async function loadScope() {
     $('feelings').replaceChildren();
     data.entities.filter(e => e.kind === 'user').forEach(e => {
         const node = el('div', undefined, 'feeling');
-        node.append(el('span', `${e.name}　`), el('b', e.affection.toFixed(1)), el('small', `长期好感 · 信任 ${e.trust.toFixed(2)} · 身份 ${e.id}`));
+        const portrait = data.portraits?.[e.id] || {};
+        node.append(el('b', e.name), el('p', portrait.impression || '正在慢慢熟悉。一起经历过的事情，会在后台逐渐沉淀成相处印象。'));
+        if (portrait.shared_story) node.append(el('small', `共同经历：${portrait.shared_story}`));
+        if (portrait.style) node.append(el('small', `相处习惯：${portrait.style}`));
+        if (portrait.unfinished) node.append(el('small', `还挂心：${portrait.unfinished}`));
+        const records = el('details');
+        records.append(el('summary', '查看累计记录'), el('small', `长期好感 ${e.affection.toFixed(1)} · 信任 ${e.trust.toFixed(2)}`));
+        node.append(records);
         $('feelings').append(node);
     });
-    if (!$('feelings').children.length) empty($('feelings'), '好感来自有依据的互动，普通寒暄不自动加分。');
+    if (data.portraits?.self?.impression) {
+        const own = el('div', undefined, 'feeling');
+        own.append(el('h3', '最近对自己的认识'), el('p', data.portraits.self.impression));
+        $('feelings').append(own);
+    }
+    if (!$('feelings').children.length) empty($('feelings'), '相处印象会在聊完一段后自动形成，不需要手动教它记。');
     $('questions').replaceChildren(); // Dashboard shows questions for all actors, not just a fake empty sender.
     (data.all_questions || data.curiosity).forEach(q => $('questions').append(el('div', q.question, 'question')));
     if (!$('questions').children.length) empty($('questions'), '没有待解的问题，也可以安静地陪伴。');
@@ -202,6 +214,9 @@ async function settings() {
     schema = data.schema;
     values = data.values;
     $('settings-form').replaceChildren();
+    const advanced = el('details', undefined, 'advanced-settings');
+    advanced.append(el('summary', '更多设置：记忆容量、保留时间与后台参数'));
+    const advancedKeys = new Set(['analysis_timeout_seconds', 'queue_limit', 'recall_limit', 'context_char_limit', 'raw_retention_days', 'reflection_batch_turns', 'reflection_max_wait_minutes', 'interop_gap_minutes']);
     for (const [key, spec] of Object.entries(schema)) {
         const field = el('div', undefined, 'field'),
             label = el('label', spec.description),
@@ -223,8 +238,9 @@ async function settings() {
         }
         field.append(label, input);
         if (spec.hint) field.append(el('small', spec.hint));
-        $('settings-form').append(field);
+        (advancedKeys.has(key) ? advanced : $('settings-form')).append(field);
     }
+    $('settings-form').append(advanced);
 }
 document.querySelectorAll('[data-tab]').forEach(button => button.addEventListener('click', () => {
     document.querySelectorAll('.panel').forEach(panel => panel.hidden = panel.id !== button.dataset.tab);

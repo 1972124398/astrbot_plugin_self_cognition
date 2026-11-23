@@ -8,6 +8,10 @@
     --muted: #74847b;
     --card: #fffefa
 }
+.advanced-settings { grid-column: 1 / -1; padding: 18px 0; border-top: 1px solid var(--line); }
+.advanced-settings > summary { color: var(--muted); font-size: 13px; cursor: pointer; }
+.feeling details { font-size: 11px; color: var(--muted); margin-top: 12px; }
+.feeling p { color: inherit; }
 
 * {
     box-sizing: border-box
