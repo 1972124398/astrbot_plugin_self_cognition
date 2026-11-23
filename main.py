@@ -17,8 +17,18 @@ from astrbot.api.star import Context, Star, StarTools
 from astrbot.core.agent.message import TextPart
 from astrbot.core.message.message_event_result import MessageChain, ResultContentType
 
-from .cognition import (CONTEXT_FRAME, REFLECT_SYSTEM, actor_key, conversation_key,
-                        digest, event_kind, number, parse_reflection, scope_key, text)
+from .cognition import (
+    CONTEXT_FRAME,
+    REFLECT_SYSTEM,
+    actor_key,
+    conversation_key,
+    digest,
+    event_kind,
+    number,
+    parse_reflection,
+    scope_key,
+    text,
+)
 from .interop import CompanionLink
 from .store import Store
 
@@ -46,10 +56,14 @@ class SelfCognition(Star):
             self.has_views = False
         else:
             self.has_views = True
-            for endpoint, method, handler in (("overview", "GET", self.page_overview),
-                    ("scope", "GET", self.page_scope), ("settings", "GET", self.page_settings),
-                    ("settings", "POST", self.save_settings), ("forget", "POST", self.page_forget),
-                    ("control", "POST", self.page_control)):
+            for endpoint, method, handler in (
+                ("overview", "GET", self.page_overview),
+                ("scope", "GET", self.page_scope),
+                ("settings", "GET", self.page_settings),
+                ("settings", "POST", self.save_settings),
+                ("forget", "POST", self.page_forget),
+                ("control", "POST", self.page_control),
+            ):
                 context.register_web_api(f"/{NAME}/{endpoint}", handler, [method], "自主认知 " + endpoint)
 
     def n(self, key, default, low, high):
@@ -127,25 +141,43 @@ class SelfCognition(Star):
         self.store.touch(scope, actor, name, time.time())
         self.link.begin(event)
         mid = str(getattr(event.message_obj, "message_id", "") or uuid.uuid4().hex)
-        job = {"id": digest(scope, mid, actor), "scope": scope, "generation": state["generation"],
-               "actor": actor, "name": name, "origin": origin, "source_kind": "dialogue",
-               "human": human, "reply": "", "persona": self.persona_prompt(event, request),
-               "provider_id": text(self.config.get("analysis_provider_id"), 200), "captured": time.time()}
+        job = {
+            "id": digest(scope, mid, actor),
+            "scope": scope,
+            "generation": state["generation"],
+            "actor": actor,
+            "name": name,
+            "origin": origin,
+            "source_kind": "dialogue",
+            "human": human,
+            "reply": "",
+            "persona": self.persona_prompt(event, request),
+            "provider_id": text(self.config.get("analysis_provider_id"), 200),
+            "captured": time.time(),
+        }
         recalled = self.store.context(scope, actor, human, int(self.n("recall_limit", 10, 1, 30)))
         companions = self.link.snapshots(origin)
         job["companions"] = companions
         job["questions"] = recalled["curiosity"]
         event.set_extra(TURN, job)
-        payload = {"speaker": {"id": actor, "name": name}, "memories": recalled["memories"],
-                   "relations": recalled["relations"], "entities": recalled["entities"],
-                   "feeling": recalled["feeling"], "curiosity": recalled["curiosity"] if self.config.get("curiosity_enabled", True) else [],
-                   "companion": copy.deepcopy(companions), "preferences": text(self.config.get("behavior_preferences"), 1200)}
+        payload = {
+            "speaker": {"id": actor, "name": name},
+            "memories": recalled["memories"],
+            "relations": recalled["relations"],
+            "entities": recalled["entities"],
+            "feeling": recalled["feeling"],
+            "curiosity": recalled["curiosity"] if self.config.get("curiosity_enabled", True) else [],
+            "companion": copy.deepcopy(companions),
+            "preferences": text(self.config.get("behavior_preferences"), 1200),
+        }
         self.fit_context(payload)
         parts = getattr(request, "extra_user_content_parts", None)
         if parts is None:
             parts = request.extra_user_content_parts = []
         if not any(str(getattr(p, "text", "")).startswith("<self_cognition>") for p in parts):
-            parts.append(TextPart(text=CONTEXT_FRAME.format(payload=json.dumps(payload, ensure_ascii=False))).mark_as_temp())
+            parts.append(
+                TextPart(text=CONTEXT_FRAME.format(payload=json.dumps(payload, ensure_ascii=False))).mark_as_temp()
+            )
         self.observe_snapshots(state, companions, job["persona"])
 
     def fit_context(self, payload):
@@ -161,8 +193,11 @@ class SelfCognition(Star):
     @filter.on_llm_response(priority=-100)
     async def response(self, event: AstrMessageEvent, response):
         job = event.get_extra(TURN)
-        if (not isinstance(job, dict) or getattr(response, "tools_call_args", None)
-                or getattr(response, "role", "assistant") != "assistant"):
+        if (
+            not isinstance(job, dict)
+            or getattr(response, "tools_call_args", None)
+            or getattr(response, "role", "assistant") != "assistant"
+        ):
             return
         job["reply"] = text(getattr(response, "completion_text", ""), 12000)
         self.link.end(event)
@@ -198,17 +233,32 @@ class SelfCognition(Star):
             if role == "play_together":
                 data = {"last_game": data.get("last_game")} if data.get("last_game") else {}
             elif role == "self_amusement":
-                data = {"recent_own_messages": data.get("recent_own_messages")} if data.get("recent_own_messages") else {}
+                data = (
+                    {"recent_own_messages": data.get("recent_own_messages")} if data.get("recent_own_messages") else {}
+                )
             # Codex status is transient: let chat use it, do not memorize job internals.
             elif role == "codex_bridge":
                 continue
             if not data:
                 continue
             evidence = json.dumps({"source": role, "snapshot": data}, ensure_ascii=False)[:12000]
-            self.enqueue({"id": digest(state["id"], role, evidence), "scope": state["id"],
-                "generation": state["generation"], "origin": state["origin"], "actor": "self", "name": "我",
-                "human": evidence, "reply": "", "persona": persona, "source_kind": "companion",
-                "provider_id": text(self.config.get("analysis_provider_id"), 200), "captured": time.time(), "questions": []})
+            self.enqueue(
+                {
+                    "id": digest(state["id"], role, evidence),
+                    "scope": state["id"],
+                    "generation": state["generation"],
+                    "origin": state["origin"],
+                    "actor": "self",
+                    "name": "我",
+                    "human": evidence,
+                    "reply": "",
+                    "persona": persona,
+                    "source_kind": "companion",
+                    "provider_id": text(self.config.get("analysis_provider_id"), 200),
+                    "captured": time.time(),
+                    "questions": [],
+                }
+            )
 
     async def process(self, job):
         state = self.store.scope(job["scope"])
@@ -219,8 +269,9 @@ class SelfCognition(Star):
         payload["known"] = recalled
         provider = job["provider_id"] or await self.context.get_current_chat_provider_id(job["origin"])
         async with asyncio.timeout(self.n("analysis_timeout_seconds", 45, 5, 180)):
-            response = await self.context.llm_generate(chat_provider_id=provider, system_prompt=REFLECT_SYSTEM,
-                                                       prompt=json.dumps(payload, ensure_ascii=False))
+            response = await self.context.llm_generate(
+                chat_provider_id=provider, system_prompt=REFLECT_SYSTEM, prompt=json.dumps(payload, ensure_ascii=False)
+            )
         if not self.allowed(job["origin"]):
             return False
         result = parse_reflection(response.completion_text, job["human"], companion=job["source_kind"] == "companion")
@@ -243,7 +294,7 @@ class SelfCognition(Star):
                     self.last_error = "后台整理失败：" + type(error).__name__
                     self.store.failed(job, time.time())
                     logger.warning("Self-cognition reflection failed (%s)", type(error).__name__)
-                await asyncio.sleep(.1)
+                await asyncio.sleep(0.1)
             else:
                 try:
                     await asyncio.wait_for(self.wake.wait(), timeout=10)
@@ -262,34 +313,52 @@ class SelfCognition(Star):
 
     async def curiosity_step(self, state):
         origin = state["origin"]
-        if (not self.allowed(origin) or state["paused"] or state["no_contact"] or not self.config.get("curiosity_enabled", True)
-                or not self.config.get("proactive_enabled", False) or origin not in self.config.get("proactive_origins", [])
-                or self.in_quiet_hours()):
+        if (
+            not self.allowed(origin)
+            or state["paused"]
+            or state["no_contact"]
+            or not self.config.get("curiosity_enabled", True)
+            or not self.config.get("proactive_enabled", False)
+            or origin not in self.config.get("proactive_origins", [])
+            or self.in_quiet_hours()
+        ):
             return
         now = time.time()
-        if not state["last_human"] or now - max(state["last_human"], state["last_sent"]) < self.n("proactive_gap_hours", 24, 1, 720) * 3600:
+        if (
+            not state["last_human"]
+            or now - max(state["last_human"], state["last_sent"]) < self.n("proactive_gap_hours", 24, 1, 720) * 3600
+        ):
             return
         if now - state["last_human"] > self.n("proactive_max_idle_days", 7, 1, 365) * 86400:
             return
         if self.store.db.execute("SELECT 1 FROM questions WHERE scope=? AND status='sent'", (state["id"],)).fetchone():
             return
-        question = self.store.db.execute("SELECT * FROM questions WHERE scope=? AND status='pending' AND created>? ORDER BY created LIMIT 1",
-                                         (state["id"], now - 30 * 86400)).fetchone()
+        question = self.store.db.execute(
+            "SELECT * FROM questions WHERE scope=? AND status='pending' AND created>? ORDER BY created LIMIT 1",
+            (state["id"], now - 30 * 86400),
+        ).fetchone()
         if not question:
             return
         # A shared group cannot identify the intended person without a platform mention.
         if ":GroupMessage:" in origin:
             return
         snapshots = self.link.snapshots(origin)
-        if snapshots.get("self_amusement", {}).get("wants_space") or snapshots.get("play_together", {}).get("current_game"):
+        if snapshots.get("self_amusement", {}).get("wants_space") or snapshots.get("play_together", {}).get(
+            "current_game"
+        ):
             return
         token = self.link.claim(self.n("interop_gap_minutes", 10, 1, 1440) * 60)
         if not token:
             return
         try:
             current = self.store.scope(state["id"])
-            if (not current or current["no_contact"] or current["generation"] != state["generation"]
-                    or not self.link.current(token) or not self.allowed(origin)):
+            if (
+                not current
+                or current["no_contact"]
+                or current["generation"] != state["generation"]
+                or not self.link.current(token)
+                or not self.allowed(origin)
+            ):
                 return
             async with asyncio.timeout(30):
                 sent = await self.context.send_message(origin, MessageChain(chain=[Plain(question["question"])]))
@@ -318,7 +387,11 @@ class SelfCognition(Star):
         # No origin means no cross-conversation memory dump. New peers can opt in.
         if not origin or not self.allowed(origin):
             return {}
-        scopes = [s for s in self.store.scopes() if conversation_key(s["origin"]) == conversation_key(origin) and not s["paused"]]
+        scopes = [
+            s
+            for s in self.store.scopes()
+            if conversation_key(s["origin"]) == conversation_key(origin) and not s["paused"]
+        ]
         if len(scopes) != 1:
             return {}  # Ambiguous persona: do not mix identities for old protocol callers.
         return self.store.context(scopes[0]["id"], limit=4)
@@ -331,10 +404,12 @@ class SelfCognition(Star):
             return
         feeling = self.store.context(scope, actor)["feeling"]
         stats = self.store.stats(scope)
-        yield event.plain_result(f"自主认知 · {'暂停' if state['paused'] else '运行中'}\n"
-            f"长期好感 {feeling.get('affection', 0):.1f} · 信任 {feeling.get('trust', .5):.2f}\n"
+        yield event.plain_result(
+            f"自主认知 · {'暂停' if state['paused'] else '运行中'}\n"
+            f"长期好感 {feeling.get('affection', 0):.1f} · 信任 {feeling.get('trust', 0.5):.2f}\n"
             f"记忆 {stats['memories']} · 关系 {stats['relations']} · 待整理 {stats['pending']} · 失败 {stats['failed']}\n"
-            f"会话 UMO：{event.unified_msg_origin}\n使用 /cognition_recall 关键词 查看回忆；管理员在插件配置或认知面板管理。")
+            f"会话 UMO：{event.unified_msg_origin}\n使用 /cognition_recall 关键词 查看回忆；管理员在插件配置或认知面板管理。"
+        )
 
     @filter.command("cognition_recall")
     async def recall(self, event: AstrMessageEvent, query: str = ""):
@@ -345,14 +420,19 @@ class SelfCognition(Star):
             yield event.plain_result("此会话的自主认知已暂停。")
             return
         rows = self.store.context(scope, actor, query, 6)["memories"]
-        yield event.plain_result("\n".join(f"#{r['id']} [{r['kind']}] {r['content']}（依据：{r['evidence']}）" for r in rows) or "暂时没有相关回忆。")
+        yield event.plain_result(
+            "\n".join(f"#{r['id']} [{r['kind']}] {r['content']}（依据：{r['evidence']}）" for r in rows)
+            or "暂时没有相关回忆。"
+        )
 
     @filter.command("cognition_control")
     @filter.permission_type(filter.PermissionType.ADMIN)
     async def control(self, event: AstrMessageEvent, action: str = ""):
         scope, _, _, _ = self.identity(event)
         if action not in {"pause", "resume", "retry", "clear_confirm"}:
-            yield event.plain_result("/cognition_control pause|resume|retry|clear_confirm（最后一项删除本会话人格的全部认知）")
+            yield event.plain_result(
+                "/cognition_control pause|resume|retry|clear_confirm（最后一项删除本会话人格的全部认知）"
+            )
             return
         self.do_control(scope, action)
         yield event.plain_result("自主认知操作已完成：" + action)
@@ -381,31 +461,45 @@ class SelfCognition(Star):
 
     async def page_overview(self):
         from astrbot.api.web import error_response, json_response, request
+
         if not request.username:
             return error_response("需要登录 AstrBot 管理面板", status_code=401)
-        return json_response({"scopes": [{**s, "stats": self.store.stats(s["id"])} for s in self.store.scopes()],
-                              "last_error": self.last_error})
+        return json_response(
+            {
+                "scopes": [{**s, "stats": self.store.stats(s["id"])} for s in self.store.scopes()],
+                "last_error": self.last_error,
+            }
+        )
 
     async def page_scope(self):
         from astrbot.api.web import error_response, json_response, request
+
         if not request.username:
             return error_response("需要登录", status_code=401)
         scope = request.query.get("scope", "")
         if not self.store.scope(scope):
             return error_response("会话不存在", status_code=404)
         data = self.store.context(scope, query=request.query.get("query", ""), limit=30)
-        data["all_questions"] = [dict(r) for r in self.store.db.execute(
-            "SELECT * FROM questions WHERE scope=? AND status='pending' ORDER BY created LIMIT 50", (scope,))]
+        data["all_questions"] = [
+            dict(r)
+            for r in self.store.db.execute(
+                "SELECT * FROM questions WHERE scope=? AND status='pending' ORDER BY created LIMIT 50", (scope,)
+            )
+        ]
         return json_response(data)
 
     async def page_settings(self):
         from astrbot.api.web import error_response, json_response, request
+
         if not request.username:
             return error_response("需要登录", status_code=401)
-        return json_response({"schema": self.schema, "values": {k: self.config.get(k, v.get("default")) for k, v in self.schema.items()}})
+        return json_response(
+            {"schema": self.schema, "values": {k: self.config.get(k, v.get("default")) for k, v in self.schema.items()}}
+        )
 
     async def save_settings(self):
         from astrbot.api.web import error_response, json_response, request
+
         if not request.username:
             return error_response("需要登录", status_code=401)
         values = await request.json(default={})
@@ -430,11 +524,18 @@ class SelfCognition(Star):
         for key, value in values.items():
             spec = self.schema[key]
             kind = spec["type"]
-            valid = ((kind == "bool" and isinstance(value, bool))
+            valid = (
+                (kind == "bool" and isinstance(value, bool))
                 or (kind in {"string", "text"} and isinstance(value, str) and len(value) <= 12000)
                 or (kind == "int" and type(value) is int)
                 or (kind == "float" and type(value) in {int, float})
-                or (kind == "list" and isinstance(value, list) and len(value) <= 200 and all(isinstance(v, str) and len(v) < 1000 for v in value)))
+                or (
+                    kind == "list"
+                    and isinstance(value, list)
+                    and len(value) <= 200
+                    and all(isinstance(v, str) and len(v) < 1000 for v in value)
+                )
+            )
             if not valid:
                 raise ValueError("配置类型无效：" + key)
             if "slider" in spec and not spec["slider"]["min"] <= value <= spec["slider"]["max"]:
@@ -447,19 +548,29 @@ class SelfCognition(Star):
 
     async def page_forget(self):
         from astrbot.api.web import error_response, json_response, request
+
         if not request.username:
             return error_response("需要登录", status_code=401)
         payload = await request.json(default={})
-        if not isinstance(payload, dict) or type(payload.get("id")) is not int or not isinstance(payload.get("scope"), str):
+        if (
+            not isinstance(payload, dict)
+            or type(payload.get("id")) is not int
+            or not isinstance(payload.get("scope"), str)
+        ):
             return error_response("请求无效")
         return json_response({"deleted": self.store.forget_memory(payload["scope"], payload["id"])})
 
     async def page_control(self):
         from astrbot.api.web import error_response, json_response, request
+
         if not request.username:
             return error_response("需要登录", status_code=401)
         payload = await request.json(default={})
-        if not isinstance(payload, dict) or not isinstance(payload.get("scope"), str) or not self.store.scope(payload["scope"]):
+        if (
+            not isinstance(payload, dict)
+            or not isinstance(payload.get("scope"), str)
+            or not self.store.scope(payload["scope"])
+        ):
             return error_response("会话不存在")
         try:
             self.do_control(payload["scope"], payload.get("action"))

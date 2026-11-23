@@ -1,26 +1,195 @@
 {
-  "enabled": {"description": "启用自主认知", "type": "bool", "default": true},
-  "allowed_origins": {"description": "启用会话 UMO 白名单", "type": "list", "default": [], "hint": "留空允许所有已启用本插件的会话。使用 /cognition 获取 UMO。人格与会话分别保存记忆，群内成员通过发送者 ID 区分。"},
-  "analysis_provider_id": {"description": "后台认知整理模型", "type": "string", "default": "", "_special": "select_provider", "hint": "留空使用当前会话模型。每次完成的对话通常额外调用一次模型，可选独立 Provider。"},
-  "analysis_timeout_seconds": {"description": "后台整理超时（秒）", "type": "int", "default": 45, "slider": {"min": 5, "max": 180, "step": 1}},
-  "queue_limit": {"description": "持久化整理队列上限", "type": "int", "default": 256, "slider": {"min": 8, "max": 4096, "step": 8}, "hint": "失败退避重试，5次失败后可在面板重试。队列满会在日志及面板提示，不删除已有待处理项。"},
-  "recall_limit": {"description": "每轮最多召回记忆条数", "type": "int", "default": 10, "slider": {"min": 1, "max": 30, "step": 1}},
-  "context_char_limit": {"description": "认知上下文 JSON 字符预算", "type": "int", "default": 9000, "slider": {"min": 2000, "max": 30000, "step": 500}, "hint": "超出预算时移除完整记录；附加的固定说明不计入此预算。"},
-  "raw_retention_days": {"description": "原始对话片段保留天数", "type": "int", "default": 30, "slider": {"min": 0, "max": 3650, "step": 1}, "hint": "0 表示永久保留；提炼记忆及其证据、关系、好感账本永久保存。未完成的整理任务仍保留待处理文本。"},
-  "affection_daily_cap": {"description": "每人每日好感累计上限", "type": "float", "default": 10.0, "slider": {"min": 0, "max": 100, "step": 0.5}, "hint": "累计好感无总上限、不自然衰减；每轮最多+3。每日按 UTC 切分。信任单独变化，与短期情绪分开。"},
-  "behavior_preferences": {"description": "拟人相处偏好", "type": "text", "default": "自然记住共同经历，有自己的偏好和边界；相关时回忆，关心时再问，不把聊天变成盘问。", "hint": "补充当前人格的表达偏好。不会替换 AstrBot 主角色提示词。"},
-  "curiosity_enabled": {"description": "启用自然好奇与追问", "type": "bool", "default": true, "hint": "从明确互动中提出待解问题，在之后的聊天中按话题自然使用。"},
-  "proactive_enabled": {"description": "允许空闲时主动提问", "type": "bool", "default": false, "hint": "开启后还需填写目标私聊 UMO。仅发送有证据的待解问题，每次最多一个；未回复时不连发。"},
-  "proactive_origins": {"description": "允许主动提问的私聊 UMO", "type": "list", "default": [], "hint": "逐行填写完整 UMO。当前版本主动提问仅支持私聊。必须先产生真实对话与待解问题。"},
-  "proactive_gap_hours": {"description": "主动提问最小间隔（小时）", "type": "int", "default": 24, "slider": {"min": 1, "max": 720, "step": 1}},
-  "proactive_max_idle_days": {"description": "停止联系超过几天不再主动提问", "type": "int", "default": 7, "slider": {"min": 1, "max": 365, "step": 1}},
-  "timezone": {"description": "主动提问时区", "type": "string", "default": "Asia/Shanghai", "hint": "IANA 时区名，例如 Asia/Shanghai。无效时区会阻止主动提问。"},
-  "quiet_start": {"description": "免打扰开始小时", "type": "int", "default": 23, "slider": {"min": 0, "max": 23, "step": 1}},
-  "quiet_end": {"description": "免打扰结束小时", "type": "int", "default": 8, "slider": {"min": 0, "max": 23, "step": 1}, "hint": "与开始小时相同时关闭免打扰；支持跨午夜。"},
-  "interop_enabled": {"description": "启用可选插件联动", "type": "bool", "default": true, "hint": "不要求安装任何配套插件。读取已启用插件的会话快照，参与共享发言间隔与空闲占用协调。"},
-  "interop_gap_minutes": {"description": "联动主动发言最小间隔（分钟）", "type": "int", "default": 10, "slider": {"min": 1, "max": 1440, "step": 1}},
-  "link_short_term_mood": {"description": "联动短期共享情绪", "type": "bool", "default": true, "hint": "心情参与当前聊天背景，好感不会随情绪自然恢复而减少。"},
-  "link_play_together": {"description": "联动陪它玩", "type": "bool", "default": true, "hint": "记住上次游戏快照中的共同经历；快照不作为真人好感依据。游戏进行时避免主动打断。"},
-  "link_self_amusement": {"description": "联动自娱自乐", "type": "bool", "default": true, "hint": "记住近期自己分享过的见闻，尊重对方需要空间的状态。快照不作为真人发言。"},
-  "link_codex_bridge": {"description": "联动 Codex Bridge", "type": "bool", "default": true, "hint": "任务状态可参与当前聊天背景。后台任务不算真人新发言，也不会增加好感；不长期保存任务内部资料。"}
+  "enabled": {
+    "description": "启用自主认知",
+    "type": "bool",
+    "default": true
+  },
+  "allowed_origins": {
+    "description": "启用会话 UMO 白名单",
+    "type": "list",
+    "default": [],
+    "hint": "留空允许所有已启用本插件的会话。使用 /cognition 获取 UMO。人格与会话分别保存记忆，群内成员通过发送者 ID 区分。"
+  },
+  "analysis_provider_id": {
+    "description": "后台认知整理模型",
+    "type": "string",
+    "default": "",
+    "_special": "select_provider",
+    "hint": "留空使用当前会话模型。每次完成的对话通常额外调用一次模型，可选独立 Provider。"
+  },
+  "analysis_timeout_seconds": {
+    "description": "后台整理超时（秒）",
+    "type": "int",
+    "default": 45,
+    "slider": {
+      "min": 5,
+      "max": 180,
+      "step": 1
+    }
+  },
+  "queue_limit": {
+    "description": "持久化整理队列上限",
+    "type": "int",
+    "default": 256,
+    "slider": {
+      "min": 8,
+      "max": 4096,
+      "step": 8
+    },
+    "hint": "失败退避重试，5次失败后可在面板重试。队列满会在日志及面板提示，不删除已有待处理项。"
+  },
+  "recall_limit": {
+    "description": "每轮最多召回记忆条数",
+    "type": "int",
+    "default": 10,
+    "slider": {
+      "min": 1,
+      "max": 30,
+      "step": 1
+    }
+  },
+  "context_char_limit": {
+    "description": "认知上下文 JSON 字符预算",
+    "type": "int",
+    "default": 9000,
+    "slider": {
+      "min": 2000,
+      "max": 30000,
+      "step": 500
+    },
+    "hint": "超出预算时移除完整记录；附加的固定说明不计入此预算。"
+  },
+  "raw_retention_days": {
+    "description": "原始对话片段保留天数",
+    "type": "int",
+    "default": 30,
+    "slider": {
+      "min": 0,
+      "max": 3650,
+      "step": 1
+    },
+    "hint": "0 表示永久保留；提炼记忆及其证据、关系、好感账本永久保存。未完成的整理任务仍保留待处理文本。"
+  },
+  "affection_daily_cap": {
+    "description": "每人每日好感累计上限",
+    "type": "float",
+    "default": 10.0,
+    "slider": {
+      "min": 0,
+      "max": 100,
+      "step": 0.5
+    },
+    "hint": "累计好感无总上限、不自然衰减；每轮最多+3。每日按 UTC 切分。信任单独变化，与短期情绪分开。"
+  },
+  "behavior_preferences": {
+    "description": "拟人相处偏好",
+    "type": "text",
+    "default": "自然记住共同经历，有自己的偏好和边界；相关时回忆，关心时再问，不把聊天变成盘问。",
+    "hint": "补充当前人格的表达偏好。不会替换 AstrBot 主角色提示词。"
+  },
+  "curiosity_enabled": {
+    "description": "启用自然好奇与追问",
+    "type": "bool",
+    "default": true,
+    "hint": "从明确互动中提出待解问题，在之后的聊天中按话题自然使用。"
+  },
+  "proactive_enabled": {
+    "description": "允许空闲时主动提问",
+    "type": "bool",
+    "default": false,
+    "hint": "开启后还需填写目标私聊 UMO。仅发送有证据的待解问题，每次最多一个；未回复时不连发。"
+  },
+  "proactive_origins": {
+    "description": "允许主动提问的私聊 UMO",
+    "type": "list",
+    "default": [],
+    "hint": "逐行填写完整 UMO。当前版本主动提问仅支持私聊。必须先产生真实对话与待解问题。"
+  },
+  "proactive_gap_hours": {
+    "description": "主动提问最小间隔（小时）",
+    "type": "int",
+    "default": 24,
+    "slider": {
+      "min": 1,
+      "max": 720,
+      "step": 1
+    }
+  },
+  "proactive_max_idle_days": {
+    "description": "停止联系超过几天不再主动提问",
+    "type": "int",
+    "default": 7,
+    "slider": {
+      "min": 1,
+      "max": 365,
+      "step": 1
+    }
+  },
+  "timezone": {
+    "description": "主动提问时区",
+    "type": "string",
+    "default": "Asia/Shanghai",
+    "hint": "IANA 时区名，例如 Asia/Shanghai。无效时区会阻止主动提问。"
+  },
+  "quiet_start": {
+    "description": "免打扰开始小时",
+    "type": "int",
+    "default": 23,
+    "slider": {
+      "min": 0,
+      "max": 23,
+      "step": 1
+    }
+  },
+  "quiet_end": {
+    "description": "免打扰结束小时",
+    "type": "int",
+    "default": 8,
+    "slider": {
+      "min": 0,
+      "max": 23,
+      "step": 1
+    },
+    "hint": "与开始小时相同时关闭免打扰；支持跨午夜。"
+  },
+  "interop_enabled": {
+    "description": "启用可选插件联动",
+    "type": "bool",
+    "default": true,
+    "hint": "不要求安装任何配套插件。读取已启用插件的会话快照，参与共享发言间隔与空闲占用协调。"
+  },
+  "interop_gap_minutes": {
+    "description": "联动主动发言最小间隔（分钟）",
+    "type": "int",
+    "default": 10,
+    "slider": {
+      "min": 1,
+      "max": 1440,
+      "step": 1
+    }
+  },
+  "link_short_term_mood": {
+    "description": "联动短期共享情绪",
+    "type": "bool",
+    "default": true,
+    "hint": "心情参与当前聊天背景，好感不会随情绪自然恢复而减少。"
+  },
+  "link_play_together": {
+    "description": "联动陪它玩",
+    "type": "bool",
+    "default": true,
+    "hint": "记住上次游戏快照中的共同经历；快照不作为真人好感依据。游戏进行时避免主动打断。"
+  },
+  "link_self_amusement": {
+    "description": "联动自娱自乐",
+    "type": "bool",
+    "default": true,
+    "hint": "记住近期自己分享过的见闻，尊重对方需要空间的状态。快照不作为真人发言。"
+  },
+  "link_codex_bridge": {
+    "description": "联动 Codex Bridge",
+    "type": "bool",
+    "default": true,
+    "hint": "任务状态可参与当前聊天背景。后台任务不算真人新发言，也不会增加好感；不长期保存任务内部资料。"
+  }
 }

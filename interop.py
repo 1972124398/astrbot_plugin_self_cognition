@@ -3,6 +3,7 @@
 Older companions have a fixed publisher roster. Snapshot polling works with them
 without patching their source or registering fake user messages.
 """
+
 from __future__ import annotations
 
 import copy
@@ -23,7 +24,11 @@ class CompanionLink:
         self.state = state
 
     def snapshot(self, role, origin):
-        if not self.config.get("enabled", True) or not self.config.get("interop_enabled", True) or not self.config.get("link_" + role, True):
+        if (
+            not self.config.get("enabled", True)
+            or not self.config.get("interop_enabled", True)
+            or not self.config.get("link_" + role, True)
+        ):
             return {}
         try:
             name = "astrbot_plugin_" + role
@@ -33,9 +38,12 @@ class CompanionLink:
                 return {}
             peer = star.star_cls
             config = getattr(peer, "config", getattr(peer, "settings", {}))
-            if (getattr(peer, "closing", False) or not config.get("enabled", True)
-                    or not config.get("interop_enabled", True)
-                    or not any(n in allowed for n in ("*", name, getattr(star, "plugin_id", "")))):
+            if (
+                getattr(peer, "closing", False)
+                or not config.get("enabled", True)
+                or not config.get("interop_enabled", True)
+                or not any(n in allowed for n in ("*", name, getattr(star, "plugin_id", "")))
+            ):
                 return {}
             value = peer.companion_snapshot(origin)
             return copy.deepcopy(value) if isinstance(value, dict) else {}
@@ -59,8 +67,11 @@ class CompanionLink:
     def claim(self, gap):
         now = time.monotonic()
         state = self.state
-        state["turns"] = {k: {o: end for o, end in v.items() if end > now}
-                          for k, v in state["turns"].items() if any(end > now for end in v.values())}
+        state["turns"] = {
+            k: {o: end for o, end in v.items() if end > now}
+            for k, v in state["turns"].items()
+            if any(end > now for end in v.values())
+        }
         if state["turns"] or time.time() - state["last_sent"] < gap:
             return None
         if state["idle"] and state["idle"]["until"] > now:
@@ -71,9 +82,13 @@ class CompanionLink:
 
     def current(self, token):
         lease = self.state["idle"]
-        return bool(lease and lease["token"] == token and lease["until"] > time.monotonic()
-                    and lease["revision"] == self.state["revision"]
-                    and not any(self.state["turns"].values()))
+        return bool(
+            lease
+            and lease["token"] == token
+            and lease["until"] > time.monotonic()
+            and lease["revision"] == self.state["revision"]
+            and not any(self.state["turns"].values())
+        )
 
     def release(self, token):
         if self.state["idle"] and self.state["idle"]["token"] == token:

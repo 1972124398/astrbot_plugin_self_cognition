@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from astrbot_plugin_self_cognition.cognition import (actor_key, parse_reflection, scope_key, tokens)
+from astrbot_plugin_self_cognition.cognition import actor_key, parse_reflection, scope_key, tokens
 from astrbot_plugin_self_cognition.store import Store
 
 
@@ -13,11 +13,24 @@ HUMAN = "我喜欢无糖茶，小明是我的同事。谢谢你一直记得我�
 
 
 def reflection(content="喜欢无糖茶", affection=3):
-    return {"memories": [{"subject": "$speaker", "key": "drink", "kind": "preference", "content": content,
-                           "evidence": "我喜欢无糖茶", "confidence": .95, "importance": .8}],
-            "relations": [{"source": "$speaker", "target": "小明", "label": "同事", "evidence": "小明是我的同事", "confidence": .95}],
-            "feeling": {"affection": affection, "trust": .08, "reason": "真诚感谢", "evidence": "谢谢你一直记得我的事"},
-            "curiosity": [{"question": "最近在练哪首曲子？", "evidence": "最近在练琴"}]}
+    return {
+        "memories": [
+            {
+                "subject": "$speaker",
+                "key": "drink",
+                "kind": "preference",
+                "content": content,
+                "evidence": "我喜欢无糖茶",
+                "confidence": 0.95,
+                "importance": 0.8,
+            }
+        ],
+        "relations": [
+            {"source": "$speaker", "target": "小明", "label": "同事", "evidence": "小明是我的同事", "confidence": 0.95}
+        ],
+        "feeling": {"affection": affection, "trust": 0.08, "reason": "真诚感谢", "evidence": "谢谢你一直记得我的事"},
+        "curiosity": [{"question": "最近在练哪首曲子？", "evidence": "最近在练琴"}],
+    }
 
 
 class StoreTests(unittest.TestCase):
@@ -34,9 +47,19 @@ class StoreTests(unittest.TestCase):
         self.temp.cleanup()
 
     def job(self, name="one", **changes):
-        job = {"id": name, "scope": self.scope, "generation": self.store.scope(self.scope)["generation"],
-               "actor": self.actor, "name": "Alice", "origin": "test:FriendMessage:alice", "source_kind": "dialogue",
-               "human": HUMAN, "reply": "我记得。", "provider_id": "", "persona": "朋友"}
+        job = {
+            "id": name,
+            "scope": self.scope,
+            "generation": self.store.scope(self.scope)["generation"],
+            "actor": self.actor,
+            "name": "Alice",
+            "origin": "test:FriendMessage:alice",
+            "source_kind": "dialogue",
+            "human": HUMAN,
+            "reply": "我记得。",
+            "provider_id": "",
+            "persona": "朋友",
+        }
         job.update(changes)
         return job
 
@@ -133,8 +156,9 @@ class StoreTests(unittest.TestCase):
         self.assertNotEqual(self.scope, scope_key("test:FriendMessage:alice", "other_persona"))
 
     def test_group_split_sessions_share_group_scope_but_not_senders(self):
-        self.assertEqual(scope_key("qq:GroupMessage:x|group|123|alice", "p"),
-                         scope_key("qq:GroupMessage:x|group|123|bob", "p"))
+        self.assertEqual(
+            scope_key("qq:GroupMessage:x|group|123|alice", "p"), scope_key("qq:GroupMessage:x|group|123|bob", "p")
+        )
         self.assertNotEqual(actor_key("qq:GroupMessage:123", "alice"), actor_key("qq:GroupMessage:123", "bob"))
 
     def test_queue_survives_restart_and_retry_exhaustion(self):
@@ -199,14 +223,14 @@ class ValidationTests(unittest.TestCase):
         self.assertEqual(parsed["affection"], 0)
 
     def test_reject_nan_nonobject_and_malformed_json(self):
-        for raw in ('{"bad":NaN}', '[]', 'null', 'not json'):
+        for raw in ('{"bad":NaN}', "[]", "null", "not json"):
             with self.assertRaises((ValueError, TypeError)):
                 parse_reflection(raw, HUMAN)
 
     def test_fenced_json_and_nonfinite_numeric_strings(self):
         data = reflection()
         data["feeling"]["affection"] = "Infinity"
-        parsed = parse_reflection('```json\n' + json.dumps(data, ensure_ascii=False) + '\n```', HUMAN)
+        parsed = parse_reflection("```json\n" + json.dumps(data, ensure_ascii=False) + "\n```", HUMAN)
         self.assertEqual(parsed["affection"], 0)
 
     def test_unmentioned_named_entity_is_rejected(self):

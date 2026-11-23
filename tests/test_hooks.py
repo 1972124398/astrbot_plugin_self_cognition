@@ -58,7 +58,9 @@ class Hooks(unittest.IsolatedAsyncioTestCase):
             get_registered_star=lambda name: self.stars.get(name),
             get_current_chat_provider_id=AsyncMock(return_value="test-provider"),
             persona_manager=SimpleNamespace(get_persona_v3_by_id=lambda _: {"prompt": "你是有边界的朋友"}),
-            llm_generate=AsyncMock(return_value=SimpleNamespace(completion_text=json.dumps(reflection(), ensure_ascii=False))),
+            llm_generate=AsyncMock(
+                return_value=SimpleNamespace(completion_text=json.dumps(reflection(), ensure_ascii=False))
+            ),
             register_web_api=lambda *args: None,
             send_message=AsyncMock(return_value=True),
         )
@@ -106,7 +108,11 @@ class Hooks(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["persona"], "你是有边界的朋友")
 
     async def test_task_events_never_enter_human_memory_pipeline(self):
-        for key, value in (("codex_bridge", {"kind": "task_result"}), ("w1_event", {"is_user_message": False}), ("self_amusement", True)):
+        for key, value in (
+            ("codex_bridge", {"kind": "task_result"}),
+            ("w1_event", {"is_user_message": False}),
+            ("self_amusement", True),
+        ):
             event = Event()
             event.set_extra(key, value)
             await self.prepare(event)
@@ -134,10 +140,12 @@ class Hooks(unittest.IsolatedAsyncioTestCase):
         job["reply"] = "reply"
         self.plugin.store.enqueue(job)
         entered, finish = asyncio.Event(), asyncio.Event()
+
         async def provider(**kwargs):
             entered.set()
             await finish.wait()
             return SimpleNamespace(completion_text=json.dumps(reflection(), ensure_ascii=False))
+
         self.context.llm_generate.side_effect = provider
         task = asyncio.create_task(self.plugin.process(job))
         await entered.wait()
@@ -154,7 +162,9 @@ class Hooks(unittest.IsolatedAsyncioTestCase):
         state = self.plugin.store.scope(scope)
         await self.plugin.curiosity_step(state)
         self.context.send_message.assert_not_awaited()
-        self.plugin.config.update(proactive_enabled=True, proactive_origins=[event.unified_msg_origin], quiet_start=0, quiet_end=0)
+        self.plugin.config.update(
+            proactive_enabled=True, proactive_origins=[event.unified_msg_origin], quiet_start=0, quiet_end=0
+        )
         await self.plugin.curiosity_step(state)
         self.context.send_message.assert_awaited_once()
         await self.plugin.curiosity_step(self.plugin.store.scope(scope))
@@ -165,7 +175,9 @@ class Hooks(unittest.IsolatedAsyncioTestCase):
         scope = event.get_extra(TURN)["scope"]
         self.plugin.store.db.execute("UPDATE scopes SET last_human=? WHERE id=?", (time.time() - 90000, scope))
         self.plugin.store.db.commit()
-        self.plugin.config.update(proactive_enabled=True, proactive_origins=[event.unified_msg_origin], quiet_start=0, quiet_end=0)
+        self.plugin.config.update(
+            proactive_enabled=True, proactive_origins=[event.unified_msg_origin], quiet_start=0, quiet_end=0
+        )
         self.context.send_message.return_value = False
         await self.plugin.curiosity_step(self.plugin.store.scope(scope))
         self.assertEqual(len(self.plugin.store.context(scope, event.get_extra(TURN)["actor"])["curiosity"]), 1)
@@ -175,7 +187,9 @@ class Hooks(unittest.IsolatedAsyncioTestCase):
         scope = event.get_extra(TURN)["scope"]
         self.plugin.store.db.execute("UPDATE scopes SET last_human=? WHERE id=?", (time.time() - 90000, scope))
         self.plugin.store.db.commit()
-        self.plugin.config.update(proactive_enabled=True, proactive_origins=[event.unified_msg_origin], quiet_start=0, quiet_end=0)
+        self.plugin.config.update(
+            proactive_enabled=True, proactive_origins=[event.unified_msg_origin], quiet_start=0, quiet_end=0
+        )
         self.plugin.store.contact(scope, False)
         await self.plugin.curiosity_step(self.plugin.store.scope(scope))
         self.context.send_message.assert_not_awaited()
@@ -186,8 +200,10 @@ class Hooks(unittest.IsolatedAsyncioTestCase):
 
     async def test_companion_optional_disabled_and_broken(self):
         self.assertEqual(self.plugin.link.snapshots(Event.unified_msg_origin), {})
-        self.stars["astrbot_plugin_play_together"] = SimpleNamespace(activated=True,
-            star_cls=SimpleNamespace(config={}, companion_snapshot=lambda _: {"last_game": "一起完成猜数"}))
+        self.stars["astrbot_plugin_play_together"] = SimpleNamespace(
+            activated=True,
+            star_cls=SimpleNamespace(config={}, companion_snapshot=lambda _: {"last_game": "一起完成猜数"}),
+        )
         self.assertIn("play_together", self.plugin.link.snapshots(Event.unified_msg_origin))
         self.plugin.config["link_play_together"] = False
         self.assertEqual(self.plugin.link.snapshots(Event.unified_msg_origin), {})
@@ -200,6 +216,12 @@ class Hooks(unittest.IsolatedAsyncioTestCase):
         with bind_request_context(PluginRequest(req, username="admin")):
             response = await self.plugin.page_settings()
             self.assertIn("schema", json.loads(response.body))
-        for value in ({"enabled": "yes"}, {"quiet_start": 50}, {"queue_limit": True}, {"unknown": 1}, {"timezone": "Invalid/Zone"}):
+        for value in (
+            {"enabled": "yes"},
+            {"quiet_start": 50},
+            {"queue_limit": True},
+            {"unknown": 1},
+            {"timezone": "Invalid/Zone"},
+        ):
             with self.assertRaises(ValueError):
                 self.plugin.validate_settings(value)
