@@ -122,10 +122,8 @@ class LifeStore:
             self.db.executemany(
                 "INSERT OR IGNORE INTO entity_aliases VALUES(?,?,?)", [(scope, alias, who) for alias in item["names"]]
             )
-        if job["source_kind"] == "companion":
-            return
         for item in result.get("intentions", []):
-            actor = job["actor"] if item["actor"] == "$speaker" else item["actor"]
+            actor = entity(item["actor"])
             # A remembered intention belongs to a real participant or an already known person.
             if not self.db.execute("SELECT 1 FROM entities WHERE scope=? AND id=?", (scope, actor)).fetchone():
                 continue

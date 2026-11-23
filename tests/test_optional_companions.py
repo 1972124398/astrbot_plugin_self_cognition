@@ -2,6 +2,7 @@
 
 import importlib.util
 import json
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -113,3 +114,65 @@ class OptionalCompanionTests(unittest.IsolatedAsyncioTestCase):
         await self.plugin.process(queued)
         self.assertEqual(self.plugin.store.stats(scope)["feelings"], 1)
         self.assertEqual(self.plugin.memory.recall(scope)["character"]["interests"], ["海边植物"])
+
+    async def test_own_discovery_can_leave_a_thought_and_later_be_shared(self):
+        event, _ = await self.case.exchange()
+        actor, scope = event.get_extra(fixtures.TURN)["actor"], event.get_extra(fixtures.TURN)["scope"]
+        _, peer = self.install("self_amusement")
+        self.plugin.link.connect()
+        peer.link.publish(
+            "leisure_experience",
+            event.unified_msg_origin,
+            {"idea": "看到海边植物的文章", "materials": [{"title": "海边植物"}]},
+            "discovery",
+        )
+        await self.plugin.capture_queue.join()
+        batch = self.plugin.store.next_batch(9999999999, [scope], 0)
+        self.case.context.llm_generate.return_value = SimpleNamespace(
+            completion_text=json.dumps(
+                {
+                    "experience": {"story": "自己读到海边植物的文章。"},
+                    "intentions": [
+                        {
+                            "actor": actor,
+                            "topic": "海边植物",
+                            "kind": "share",
+                            "thought": "看到一段有意思的植物故事，想讲给他听",
+                        },
+                        {"actor": "$self", "topic": "潮间带", "kind": "explore", "thought": "有点想继续了解潮间带植物"},
+                    ],
+                },
+                ensure_ascii=False,
+            )
+        )
+        await self.plugin.process(batch)
+        thoughts = self.plugin.store.dashboard(scope)["intentions"]
+        self.assertEqual({i["kind"] for i in thoughts}, {"share", "explore"})
+        self.assertEqual(self.plugin.store.stats(scope)["feelings"], 1)
+        with self.plugin.store.db:
+            self.plugin.store.db.execute("UPDATE scopes SET last_human=? WHERE id=?", (time.time() - 90000, scope))
+        await self.plugin.memory.refresh(scope)
+        self.plugin.config.update(
+            proactive_enabled=True, proactive_origins=[event.unified_msg_origin], quiet_start=0, quiet_end=0
+        )
+
+        async def share(**kwargs):
+            choices = json.loads(kwargs["prompt"])["choices"]
+            selected = next(i for i in choices if i["kind"] == "share")
+            return SimpleNamespace(
+                completion_text=json.dumps(
+                    {"choice": selected["choice"], "message": "我刚读到一段海边植物的故事，有点意思。"},
+                    ensure_ascii=False,
+                )
+            )
+
+        self.case.context.llm_generate.side_effect = share
+        await self.plugin.curiosity_step(self.plugin.memory.states[scope])
+        self.case.context.send_message.assert_awaited_once()
+        statuses = {i["kind"]: i["status"] for i in self.plugin.store.dashboard(scope)["intentions"]}
+        self.assertEqual(statuses, {"share": "sent", "explore": "pending"})
+        own = next(i for i in self.plugin.store.dashboard(scope)["intentions"] if i["actor"] == "self")
+        self.plugin.store.mark_intention(scope, own["id"], "我还想弄明白潮间带的事。", time.time())
+        self.plugin.store.touch(scope, actor, "Alice", time.time())
+        own = next(i for i in self.plugin.store.dashboard(scope)["intentions"] if i["actor"] == "self")
+        self.assertEqual(own["status"], "offered")

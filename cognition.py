@@ -270,35 +270,35 @@ def parse_reflection(raw, human, *, companion=False, known_entities=(), reply=""
                 {k: individual[k] for k in ("portrait", "affection", "trust", "feeling_reason", "curiosity", "resolve")}
                 | {"actor": actor, "feeling_evidence": individual.get("feeling_evidence", "")}
             )
-        for item in items("intentions"):
-            actor = text(item.get("actor"), 80) or "$speaker"
-            topic, thought = text(item.get("topic"), 120), text(item.get("thought"), 700)
-            if not valid_entity(actor) or not topic:
-                continue
-            status = item.get("status", "pending")
-            status = status if status in {"pending", "offered", "done", "dropped"} else "pending"
-            if not thought and status not in {"done", "dropped"}:
-                continue
-            try:
-                due = datetime.fromisoformat(str(item.get("not_before", ""))).timestamp()
-            except (ValueError, TypeError, OverflowError):
-                due = 0
-            kind = text(item.get("kind"), 60) or "thought"
-            result["intentions"].append(
-                {
-                    "actor": actor,
-                    "topic": topic,
-                    "thought": thought,
-                    "status": status,
-                    "occasion": text(item.get("occasion"), 400),
-                    "not_before": due,
-                    "kind": kind,
-                }
-            )
         for item in items("aliases"):
             entity = text(item.get("entity"), 80)
             if valid_entity(entity):
                 result["aliases"].append({"entity": entity, "names": string_list(item.get("names"))})
+    for item in items("intentions"):
+        actor = text(item.get("actor"), 80) or "$speaker"
+        topic, thought = text(item.get("topic"), 120), text(item.get("thought"), 700)
+        if not valid_entity(actor) or not topic:
+            continue
+        status = item.get("status", "pending")
+        status = status if status in {"pending", "offered", "done", "dropped"} else "pending"
+        if not thought and status not in {"done", "dropped"}:
+            continue
+        try:
+            due = datetime.fromisoformat(str(item.get("not_before", ""))).timestamp()
+        except (ValueError, TypeError, OverflowError):
+            due = 0
+        kind = text(item.get("kind"), 60) or "thought"
+        result["intentions"].append(
+            {
+                "actor": actor,
+                "topic": topic,
+                "thought": thought,
+                "status": status,
+                "occasion": text(item.get("occasion"), 400),
+                "not_before": due,
+                "kind": kind,
+            }
+        )
     return result
 
 
@@ -319,14 +319,20 @@ REFLECT_SYSTEM = """你在后台回想刚才发生的事。persona 是当前实�
 不要求每次产生经历、自省、兴趣或挂念。persona 未设定的部分可以按当下语境自然发挥，不必填满所有空白。
 
 turns 按顺序记录各人的 actor/name/human/reply；speakers 是真人身份。observed 是听别人交谈，companion 是插件活动。
-把一件事理解完整，分清谁说的、自己回复的和转述的。companion 可以留下自己的经历和兴趣，不作为真人态度或好感的依据。
+把一件事理解完整，分清谁说的、自己回复的和转述的。companion 可以留下自己的经历、兴趣和想继续分享或探索的念头，不作为真人态度或好感的依据。
+活动后的分享念头可指向已知的聊天对象，也可以 actor=$self 表示自己的探索兴趣；是否产生由实际人格决定。
 
 按需选择：
 - experience：值得回想的一段具体往事（title/story/feeling/cues），可保留一句原话、共同的玩笑或当时的反应，不必升华成道理。
   分清自己参与、听别人交谈和对方转述；有明确发生时间就写在 story 中，没有则不编日期。
+  一批消息可能有几件不相关的事，只留下有印象的片段，不因消息相邻就编出因果。
+  一起玩过时可记住共同的梗、默契和相处方式，不按胜负或次数评价关系。
 - memories：值得长期保留的事实或体会（subject/key/kind/content/evidence/cues），kind 可用 fact/preference/episode/lesson/self。
   纠正同一事实沿用旧 key，避免重复。具体事实 evidence 摘自 human；自己的承诺可用 subject=$self、evidence_source=self 摘自 reply，记为说过而非做完。
   有明确时间线索时保留在 content 中；记录更新时间不是事件发生时间。
+  少量明确而稳定的偏好会作为日常熟悉背景保留，例如“不吃香菜”，不要求用户提到相同词才考虑。
+  用户纠正事实或偏好时，沿用旧 key 更新事实，并顺带修正相关的 people.portrait、character 或 intentions。
+  仍成立的其他认识保留；共同往事可记成“以前怎样，现在怎样”，不让旧摘要继续当作当前事实。
 - people：各人的相处印象，actor 用 speakers 中的 id，portrait 可写 impression/shared_story/style/unfinished；只写有变化的部分。
   feeling 可省略；有真实变化时 affection=0..3、trust=-0.1..0.1，写 reason/evidence。长期积累不代表必须更热情。
   旧问题已经在闲聊中得到回答时，可把问题原文放入该人的 resolve，不必再问一遍。
@@ -347,7 +353,7 @@ turns 按顺序记录各人的 actor/name/human/reply；speakers 是真人身份
 
 
 CONTEXT_FRAME = """<self_cognition>
-按当前实际人格自然回应，以下旧记忆仅供相关时取用，印象可以随新经历改变。
+按当前实际人格自然回应，以下记忆仅供相关时取用；具体已更新的事实优先于早先印象。
 {payload}
 </self_cognition>"""
 
@@ -382,6 +388,8 @@ def living_context(recalled, name, preferences="", companion=None):
     own = recalled.get("self_story", {}).get("impression")
     if own:
         lines.append("最近对自己的认识：" + own)
+    if recalled.get("familiar_facts"):
+        lines.append("关于" + name + "记得的小事（用得上再考虑）：" + "；".join(recalled["familiar_facts"]))
     names = {e["id"]: e["name"] for e in recalled.get("entities", [])}
     for relation in recalled.get("relations", [])[:10]:
         source, target = (names.get(relation[k], "某人") for k in ("source", "target"))

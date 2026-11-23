@@ -123,7 +123,8 @@ class Store(LifeStore):
                 (scope, actor, name),
             )
             self.db.execute(
-                "UPDATE intentions SET status='offered' WHERE scope=? AND actor=? AND status='sent'", (scope, actor)
+                "UPDATE intentions SET status='offered' WHERE scope=? AND actor IN (?, 'self') AND status='sent'",
+                (scope, actor),
             )
             # Only one unanswered proactive question per person until a real reply.
             self.db.execute(

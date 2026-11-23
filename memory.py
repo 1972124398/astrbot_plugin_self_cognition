@@ -56,6 +56,12 @@ class Memory:
     def recall(self, scope, actor="", query="", limit=8, *, conversation=False):
         view = self.views.get(scope, {})
         previous = self.focus.get((scope, actor)) if conversation else None
+        if conversation and any(
+            phrase in query.casefold()
+            for phrase in ("换个话题", "不聊这个", "不说这个", "聊点别的", "change the subject", "new topic")
+        ):
+            previous = None
+            self.focus.pop((scope, actor), None)
         effective = query
         if (
             previous
@@ -70,6 +76,20 @@ class Memory:
         if conversation:
             candidates = [row for row in candidates if terms & row.get("_terms", set())]
         rows = retrieve(candidates, effective, actor, limit)
+        familiar = (
+            sorted(
+                (
+                    row
+                    for row in view.get("memories", [])
+                    if row["subject"] == actor and row.get("kind") == "preference"
+                ),
+                key=lambda row: (row["importance"], row["updated"]),
+                reverse=True,
+            )[:2]
+            if conversation
+            else []
+        )
+        selected_ids = {row["id"] for row in rows}
         events = sorted(
             view.get("experiences", []),
             key=lambda e: (len(terms & e.get("_terms", set())) * 4 + (actor in e["actors"]), e["created"]),
@@ -112,6 +132,7 @@ class Memory:
                 self_story = {}
         return {
             "memories": [{k: v for k, v in row.items() if k != "_terms"} for row in rows],
+            "familiar_facts": [row["content"] for row in familiar if row["id"] not in selected_ids],
             "entities": copy.deepcopy(view.get("entities", [])),
             "relations": copy.deepcopy(relations),
             "feeling": next((dict(e) for e in view.get("entities", []) if e["id"] == actor), {}),
