@@ -1,7 +1,7 @@
 name: astrbot_plugin_self_cognition
 display_name: 自主认知
 desc: 让角色记住共同经历、总结相处经验、理解人物关系，并积累永久好感与自然好奇心。支持独立运行、认知面板与可选插件联动。
-version: 0.3.0
+version: 0.4.0
 author: W1
 repo: https://github.com/1972124398/astrbot_plugin_self_cognition
 astrbot_version: ">=4.29.4,<5"

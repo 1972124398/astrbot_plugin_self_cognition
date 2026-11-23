@@ -216,6 +216,29 @@ async function loadScope() {
         $('memories').append(node);
     });
     if (!data.memories.length) empty($('memories'), '暂时没有相关回忆。换个关键词，或先聊一会儿。');
+    $('experiences').replaceChildren();
+    (data.experiences || []).slice(0, 8).forEach(event => {
+        const node = el('div', undefined, 'question');
+        node.append(el('b', event.title || '一段相处'), el('p', event.story));
+        if (event.feeling) node.append(el('small', event.feeling));
+        $('experiences').append(node);
+    });
+    if (!$('experiences').children.length) empty($('experiences'), '聊过一段、一起做过些事，就会慢慢留下完整的经历。');
+    $('character').replaceChildren();
+    const character = data.character || {};
+    for (const [key, label] of [['values','一直在意'],['preferences','自己的喜好'],['habits','相处习惯'],['interests','最近兴趣'],['outlook','近来想法']]) {
+        const value = character[key];
+        if (value && (!Array.isArray(value) || value.length)) $('character').append(el('p', `${label}：${Array.isArray(value) ? value.join('；') : value}`));
+    }
+    $('intentions').replaceChildren();
+    const kinds = {care:'关心',promise:'约定',share:'想分享',play:'想一起玩',explore:'想探索',ask:'好奇'};
+    (data.intentions || []).forEach(thought => {
+        const node = el('div', undefined, 'question');
+        node.append(el('span', kinds[thought.kind] || '挂念', 'tag'), el('p', thought.thought),
+            el('small', thought.status === 'pending' ? (thought.occasion || '等合适的时候') : '已经提起，先等对方回应'));
+        $('intentions').append(node);
+    });
+    if (!$('character').children.length && !$('intentions').children.length) empty($('character'), '自己的喜好、习惯和挂念会随着经历延续。');
 }
 async function refresh() {
     const old = selected();

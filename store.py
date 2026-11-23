@@ -9,13 +9,15 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
-from datetime import datetime, timezone
 from pathlib import Path
 
 from .cognition import digest, retrieve, relevant_relations
 
 
-class Store:
+from .life import LifeStore
+
+
+class Store(LifeStore):
     def __init__(self, path):
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -97,6 +99,7 @@ class Store:
                 )
                 self.db.execute("DROP TABLE relations_v2")
         self.db.commit()
+        self.initialize_life()
 
     def ensure_scope(self, scope, origin, persona):
         with self.db:
@@ -119,6 +122,9 @@ class Store:
                 "ON CONFLICT(scope,id) DO UPDATE SET name=excluded.name",
                 (scope, actor, name),
             )
+            self.db.execute(
+                "UPDATE intentions SET status='offered' WHERE scope=? AND actor=? AND status='sent'", (scope, actor)
+            )
             # Only one unanswered proactive question per person until a real reply.
             self.db.execute(
                 "UPDATE questions SET status='answered_turn' WHERE scope=? AND actor=? AND status='sent'",
@@ -129,7 +135,19 @@ class Store:
         current = self.scope(job["scope"])
         if not current or current["paused"] or job["generation"] != current["generation"]:
             return False
-        if self.db.execute("SELECT 1 FROM jobs WHERE id=?", (job["id"],)).fetchone():
+        saved = self.db.execute("SELECT state,payload FROM jobs WHERE id=?", (job["id"],)).fetchone()
+        if saved:
+            if (
+                saved["state"] == "pending"
+                and json.loads(saved["payload"]).get("source_kind") == "observed"
+                and job["source_kind"] == "dialogue"
+            ):
+                with self.db:
+                    self.db.execute(
+                        "UPDATE jobs SET payload=? WHERE id=?", (json.dumps(job, ensure_ascii=False), job["id"])
+                    )
+                    self.db.execute("UPDATE episodes SET reply=? WHERE id=?", (job["reply"], job["id"]))
+                return True
             return False
         if (
             job["source_kind"] == "companion"
@@ -147,7 +165,7 @@ class Store:
                 "INSERT INTO jobs(id,scope,generation,payload,created) VALUES(?,?,?,?,?)",
                 (job["id"], job["scope"], job["generation"], json.dumps(job, ensure_ascii=False), now),
             )
-            if job["source_kind"] == "dialogue":
+            if job["source_kind"] in {"dialogue", "observed"}:
                 self.db.execute(
                     "INSERT OR IGNORE INTO episodes VALUES(?,?,?,?,?,?)",
                     (job["id"], job["scope"], job["actor"], job["human"], job["reply"], now),
@@ -178,8 +196,7 @@ class Store:
             item = json.loads(row["payload"])
             key = (
                 row["scope"],
-                item["actor"],
-                item["source_kind"],
+                "scene" if item["source_kind"] in {"dialogue", "observed"} else item["source_kind"],
                 item.get("provider_id", ""),
                 item.get("persona", ""),
             )
@@ -200,8 +217,14 @@ class Store:
             job["mentioned_users"] = list(
                 {e["id"]: e for _, item in chosen for e in item.get("mentioned_users", [])}.values()
             )
-            job["turns"] = [{k: item.get(k, "") for k in ("human", "reply", "captured", "name")} for _, item in chosen]
-            job["human"] = "\n".join(item["human"] for _, item in chosen)
+            job["turns"] = [
+                {k: item.get(k, "") for k in ("human", "reply", "captured", "name", "actor", "source_kind")}
+                for _, item in chosen
+            ]
+            job["speakers"] = list(
+                {item["actor"]: {"id": item["actor"], "name": item["name"]} for _, item in chosen}.values()
+            )
+            job["human"] = "\n".join("[" + item["name"] + "] " + item["human"] for _, item in chosen)
             job["reply"] = "\n".join(item["reply"] for _, item in chosen)
             job["attempts"] = first["attempts"]
             return job
@@ -211,7 +234,7 @@ class Store:
         current = self.ensure_scope(job["scope"], job["origin"], job.get("persona_id", "default"))
         if current["generation"] != job["generation"] or current["paused"]:
             return False
-        if job["source_kind"] == "dialogue":
+        if job["source_kind"] in {"dialogue", "observed"}:
             self.touch(job["scope"], job["actor"], job["name"], job.get("captured", time.time()))
             with self.db:
                 self.db.executemany(
@@ -273,6 +296,11 @@ class Store:
                 known = self.db.execute("SELECT id FROM entities WHERE scope=? AND id=?", (scope, label)).fetchone()
                 if known:
                     return known["id"]
+                aliases = self.db.execute(
+                    "SELECT entity FROM entity_aliases WHERE scope=? AND alias=?", (scope, label)
+                ).fetchall()
+                if len(aliases) == 1:
+                    return aliases[0]["entity"]
             key = actor if label == "$speaker" else ("self" if label == "$self" else "named:" + digest(label)[:24])
             name = job["name"] if label == "$speaker" else ("我" if label == "$self" else label)
             self.db.execute(
@@ -284,6 +312,10 @@ class Store:
         with self.db:
             for row in result["memories"]:
                 subject = entity("$self" if companion else row["subject"])
+                self.db.execute(
+                    "UPDATE memories SET cues=? WHERE scope=? AND subject=? AND slot=? AND active=1",
+                    (json.dumps(row.get("cues", []), ensure_ascii=False), scope, subject, row["key"]),
+                )
                 old = self.db.execute(
                     "SELECT id,content FROM memories WHERE scope=? AND subject=? AND slot=? AND active=1",
                     (scope, subject, row["key"]),
@@ -308,17 +340,38 @@ class Store:
                         row["kind"],
                         row["content"],
                         row["evidence"],
-                        job["source_kind"] + ":" + job["id"],
+                        ("own_words" if row.get("evidence_source") == "self" else job["source_kind"]) + ":" + job["id"],
                         row["confidence"],
                         row["importance"],
                         now,
                         now,
                     ),
                 )
+            for row in result["memories"]:
+                self.db.execute(
+                    "UPDATE memories SET cues=? WHERE scope=? AND subject=? AND slot=? AND active=1",
+                    (
+                        json.dumps(row.get("cues", []), ensure_ascii=False),
+                        scope,
+                        entity("$self" if companion else row["subject"]),
+                        row["key"],
+                    ),
+                )
+            for speaker in job.get("speakers", []):
+                self.db.execute(
+                    "INSERT OR IGNORE INTO entities(scope,id,name,kind) VALUES(?,?,?,?)",
+                    (scope, speaker["id"], speaker["name"], "character" if speaker["id"] == "self" else "user"),
+                )
             if not companion:
                 for row in result["relations"]:
                     source, target = entity(row["source"]), entity(row["target"])
                     status, description = row.get("status", "current"), row.get("description", "")
+                    reporter = entity(row.get("reporter", "$speaker"))
+                    self.db.execute(
+                        "INSERT INTO relation_opinions VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(scope,source,target,label,reporter) "
+                        "DO UPDATE SET status=excluded.status,description=excluded.description,evidence=excluded.evidence,updated=excluded.updated",
+                        (scope, source, target, row["label"], reporter, status, description, row["evidence"], now),
+                    )
                     previous = self.db.execute(
                         "SELECT status,description FROM relations WHERE scope=? AND source=? AND target=? AND label=?",
                         (scope, source, target, row["label"]),
@@ -327,7 +380,7 @@ class Store:
                         self.db.execute(
                             "INSERT INTO relation_history(scope,source,target,label,status,description,evidence,reporter,created) "
                             "VALUES(?,?,?,?,?,?,?,?,?)",
-                            (scope, source, target, row["label"], status, description, row["evidence"], actor, now),
+                            (scope, source, target, row["label"], status, description, row["evidence"], reporter, now),
                         )
                     self.db.execute(
                         "INSERT INTO relations VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(scope,source,target,label) DO UPDATE SET "
@@ -343,46 +396,15 @@ class Store:
                             now,
                             status,
                             description,
-                            actor,
+                            reporter,
                         ),
                     )
                 entity("$speaker")
-                day = datetime.fromtimestamp(now, timezone.utc).date().isoformat()
-                delta = result["affection"]
-                self.db.execute(
-                    "INSERT INTO feelings VALUES(?,?,?,?,?,?,?,?,?)",
-                    (
-                        job["id"],
-                        scope,
-                        actor,
-                        day,
-                        delta,
-                        result["trust"],
-                        result["feeling_reason"],
-                        result.get("feeling_evidence", ""),
-                        now,
-                    ),
-                )
-                self.db.execute(
-                    "UPDATE entities SET affection=affection+?,trust=max(0,min(1,trust+?)) WHERE scope=? AND id=?",
-                    (delta, result["trust"], scope, actor),
-                )
-                for row in result["curiosity"][:1]:
-                    count = self.db.execute(
-                        "SELECT count(*) FROM questions WHERE scope=? AND actor=? AND status='pending'", (scope, actor)
-                    ).fetchone()[0]
-                    if count < 8:
-                        self.db.execute(
-                            "INSERT OR IGNORE INTO questions(scope,actor,question,evidence,created) VALUES(?,?,?,?,?)",
-                            (scope, actor, row["question"], row["evidence"], now),
-                        )
-                for question in result["resolve"]:
-                    self.db.execute(
-                        "UPDATE questions SET status='resolved' WHERE scope=? AND actor=? AND question=?",
-                        (scope, actor, question),
-                    )
-                if result.get("portrait"):
-                    self.save_portrait(scope, actor, result["portrait"], now)
+                people = result.get("people") or [dict(result, actor=actor)]
+                for person in people:
+                    who = actor if person["actor"] == "$speaker" else person["actor"]
+                    self.save_person(job, dict(person, actor=who), now)
+            self.save_life(job, result, now, entity)
             if result.get("self_reflection"):
                 self.save_portrait(scope, "self", {"impression": result["self_reflection"]}, now)
             self.db.executemany(
@@ -417,6 +439,7 @@ class Store:
             r["actor"]: json.loads(r["content"])
             for r in self.db.execute("SELECT * FROM portraits WHERE scope=?", (scope,))
         }
+        data.update(self.life_view(scope))
         return self.scope(scope), Memory.index(data)
 
     def dashboard(self, scope, query=""):
@@ -431,6 +454,7 @@ class Store:
             r["actor"]: json.loads(r["content"])
             for r in self.db.execute("SELECT * FROM portraits WHERE scope=?", (scope,))
         }
+        data.update(self.life_view(scope))
         data["relation_history"] = [
             dict(r)
             for r in self.db.execute(
@@ -472,6 +496,7 @@ class Store:
             dict(r)
             for r in self.db.execute("SELECT * FROM relations WHERE scope=? ORDER BY updated DESC LIMIT 800", (scope,))
         ]
+        self.enrich_relations(scope, relations)
         known_ids = {e["id"] for e in entities}
         needed = {r[k] for r in relations for k in ("source", "target", "reporter")} - known_ids
         if needed:
@@ -536,6 +561,8 @@ class Store:
             self.db.execute("DELETE FROM jobs WHERE scope=?", (scope,))
             self.db.execute("DELETE FROM episodes WHERE scope=?", (scope,))
             self.db.execute("DELETE FROM portraits WHERE scope=?", (scope,))
+            for table in ("experiences", "characters", "intentions"):
+                self.db.execute(f"DELETE FROM {table} WHERE scope=?", (scope,))
         return True
 
     def clear(self, scope):
@@ -551,12 +578,22 @@ class Store:
                 "jobs",
                 "episodes",
                 "portraits",
+                "experiences",
+                "characters",
+                "intentions",
+                "entity_aliases",
+                "relation_opinions",
             ):
                 self.db.execute(f"DELETE FROM {table} WHERE scope=?", (scope,))
             self.db.execute("UPDATE scopes SET generation=generation+1,last_human=0,last_sent=0 WHERE id=?", (scope,))
 
     def initiative(self, scope, now):
         if self.db.execute("SELECT 1 FROM questions WHERE scope=? AND status='sent'", (scope,)).fetchone():
+            return None
+        intent = self.next_intention(scope, now)
+        if intent:
+            return intent
+        if self.db.execute("SELECT 1 FROM intentions WHERE scope=? AND status='sent'", (scope,)).fetchone():
             return None
         row = self.db.execute(
             "SELECT * FROM questions WHERE scope=? AND status='pending' AND created>? ORDER BY created DESC LIMIT 1",

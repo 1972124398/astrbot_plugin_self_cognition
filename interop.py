@@ -1,7 +1,7 @@
-"""Read-only companion discovery, plus the shared v1 attention lease.
+"""Optional bidirectional companion discovery, plus the shared v1 attention lease.
 
-Older companions have a fixed publisher roster. Snapshot polling works with them
-without patching their source or registering fake user messages.
+Recognized v1 rosters are extended reversibly; unsupported versions fall back to
+snapshots. No peer source files or methods are changed.
 """
 
 from __future__ import annotations
@@ -22,6 +22,64 @@ class CompanionLink:
             state = {"turns": {}, "revision": 0, "idle": None, "last_sent": 0, "seen": {}}
             setattr(context, "_w1_companion_v1", state)
         self.state = state
+        self.registrations = {}
+
+    def peer(self, role, origin=""):
+        if (
+            not self.config.get("enabled", True)
+            or not self.config.get("interop_enabled", True)
+            or not self.config.get("link_" + role, True)
+        ):
+            return None
+        try:
+            name = "astrbot_plugin_" + role
+            star = self.context.get_registered_star(name)
+            peer = star.star_cls if star and star.activated else None
+            config = getattr(peer, "config", getattr(peer, "settings", {}))
+            if (
+                not peer
+                or getattr(peer, "closing", False)
+                or not config.get("enabled", True)
+                or not config.get("interop_enabled", True)
+            ):
+                return None
+            if origin:
+                allowed = self.context.get_config(umo=origin).get("plugin_set", ["*"])
+                if not any(n in allowed for n in ("*", name, getattr(star, "plugin_id", ""))):
+                    return None
+            return peer
+        except Exception:
+            return None
+
+    def connect(self):
+        """Register a participant in the bundled v1 roster without editing peer files.
+
+        V1's own publish/context_for methods already implement both directions.
+        Only an explicitly recognized NAMES mapping is extended, and only while
+        both plugins opt in. No methods are replaced; owned entries are reversible.
+        """
+        for role in ROLES:
+            peer = self.peer(role)
+            read = getattr(getattr(peer, "link", None), "context_for", None)
+            mapping = getattr(read, "__globals__", {}).get("NAMES")
+            previous = self.registrations.get(role)
+            if previous and previous[0] is not mapping:
+                self.disconnect(role)
+            if not isinstance(mapping, dict) or mapping.get(role) != "astrbot_plugin_" + role:
+                self.disconnect(role)
+                continue
+            if role not in self.registrations:
+                owned = "self_cognition" not in mapping
+                mapping.setdefault("self_cognition", "astrbot_plugin_self_cognition")
+                self.registrations[role] = (mapping, owned)
+
+    def disconnect(self, role):
+        previous = self.registrations.pop(role, None)
+        if previous and previous[1] and previous[0].get("self_cognition") == "astrbot_plugin_self_cognition":
+            previous[0].pop("self_cognition", None)
+
+    def connected(self, role):
+        return role in self.registrations and self.peer(role) is not None
 
     def snapshot(self, role, origin):
         if (
@@ -95,6 +153,8 @@ class CompanionLink:
             self.state["idle"] = None
 
     def close(self):
+        for role in list(self.registrations):
+            self.disconnect(role)
         for owners in self.state["turns"].values():
             owners.pop(self.owner, None)
         lease = self.state["idle"]

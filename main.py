@@ -5,6 +5,7 @@ import copy
 import json
 import time
 import uuid
+import weakref
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -39,12 +40,31 @@ NAME = "astrbot_plugin_self_cognition"
 TURN = NAME + ".turn"
 
 
+class ObservedGroup(filter.CustomFilter):
+    owner = None
+
+    def filter(self, event, cfg):
+        plugin = self.owner() if self.owner else None
+        if not plugin:
+            return False
+        origin = str(event.unified_msg_origin)
+        targets = plugin.config.get("observation_origins", [])
+        return bool(
+            targets
+            and ":GroupMessage:" in origin
+            and plugin.allowed(origin)
+            and event_kind(event) == "dialogue"
+            and any(value in targets for value in (origin, conversation_key(origin)))
+        )
+
+
 class SelfCognition(Star):
     """自主认知：长期记忆、相处经验、关系图谱、永久好感与好奇心。"""
 
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
         self.config = config
+        ObservedGroup.owner = weakref.ref(self)
         self.store = Store(Path(StarTools.get_data_dir(NAME)) / "cognition.sqlite3")
         self.link = CompanionLink(context, config)
         self.closing = False
@@ -55,6 +75,9 @@ class SelfCognition(Star):
         self.initiative_task = None
         self.companions = {}
         self.initiative_wait = {}
+        self.analysis_independent = False
+        self.front_origins = {}
+        self.provider_cache = {}
         self.wake = asyncio.Event()
         self.last_error = ""
         self.schema = json.loads((Path(__file__).parent / "_conf_schema.json").read_text(encoding="utf-8"))
@@ -112,6 +135,7 @@ class SelfCognition(Star):
 
     async def initialize(self):
         await self.memory.load()
+        self.link.connect()
         self.ensure_worker()
         self.scheduler = asyncio.create_task(self.tick(), name="self-cognition-curiosity")
 
@@ -131,7 +155,68 @@ class SelfCognition(Star):
     def chatting(self):
         now = time.monotonic()
         self.frontend = {key: until for key, until in self.frontend.items() if until > now}
+        self.front_origins = {key: origin for key, origin in self.front_origins.items() if key in self.frontend}
         return bool(self.frontend)
+
+    async def independent_provider(self):
+        provider = text(self.config.get("analysis_provider_id"), 200)
+        if not provider:
+            return False
+        for token in list(self.frontend):
+            origin = self.front_origins.get(token)
+            if not origin:
+                return False
+            self.provider_cache[origin] = await self.context.get_current_chat_provider_id(origin)
+            if self.provider_cache[origin] == provider:
+                return False
+        return True
+
+    @filter.custom_filter(ObservedGroup, priority=-1000)
+    async def observe_group(self, event: AstrMessageEvent):
+        origin = str(event.unified_msg_origin)
+        targets = self.config.get("observation_origins", [])
+        if (
+            not targets
+            or ":GroupMessage:" not in origin
+            or not self.allowed(origin)
+            or event_kind(event) != "dialogue"
+            or not any(value in targets for value in (origin, conversation_key(origin)))
+        ):
+            return
+        states = [
+            s
+            for s in self.memory.states.values()
+            if conversation_key(s["origin"]) == conversation_key(origin) and not s["paused"]
+        ]
+        persona_id = event.get_extra("_trace_persona_id")
+        if persona_id:
+            states = [s for s in states if s["persona"] == persona_id]
+        if len(states) != 1:
+            return
+        human = text(event.get_message_str(), 12000)
+        sender = str(event.get_sender_id() or "")
+        if not human or not sender or human.startswith("/"):
+            return
+        state = states[0]
+        mid = str(getattr(event.message_obj, "message_id", "") or uuid.uuid4().hex)
+        event.set_extra("self_cognition.observation_id", mid)
+        self.enqueue(
+            {
+                "id": digest(state["id"], mid, actor_key(origin, sender)),
+                "scope": state["id"],
+                "origin": origin,
+                "persona_id": state["persona"],
+                "persona": state.get("persona_prompt", ""),
+                "generation": state["generation"],
+                "actor": actor_key(origin, sender),
+                "name": text(event.get_sender_name(), 120) or sender,
+                "source_kind": "observed",
+                "human": human,
+                "reply": "",
+                "provider_id": "",
+                "captured": time.time(),
+            }
+        )
 
     async def save_observations(self):
         while True:
@@ -173,7 +258,11 @@ class SelfCognition(Star):
         if not human:
             return
         self.link.begin(event)
-        mid = str(getattr(event.message_obj, "message_id", "") or uuid.uuid4().hex)
+        mid = str(
+            getattr(event.message_obj, "message_id", "")
+            or event.get_extra("self_cognition.observation_id")
+            or uuid.uuid4().hex
+        )
         job = {
             "id": digest(scope, mid, actor),
             "scope": scope,
@@ -195,9 +284,15 @@ class SelfCognition(Star):
             ],
         }
         self.frontend[job["id"]] = time.monotonic() + 600
+        self.front_origins[job["id"]] = origin
         for task in (self.analysis_task, self.initiative_task):
             if task is not None and not task.done():
-                task.cancel()
+                if (
+                    task is self.initiative_task
+                    or not self.analysis_independent
+                    or self.provider_cache.get(origin) in {None, text(self.config.get("analysis_provider_id"), 200)}
+                ):
+                    task.cancel()
         state["last_human"] = job["captured"]
         self.enqueue(job, activity_only=True)
         recalled = self.memory.recall(scope, actor, human, int(self.n("recall_limit", 6, 1, 30)))
@@ -256,6 +351,8 @@ class SelfCognition(Star):
     def observe_snapshots(self, state, snapshots, persona=""):
         # Snapshot evidence is explicitly attributed to a plugin, never the human.
         for role in ("play_together", "self_amusement", "codex_bridge"):
+            if self.link.connected(role):
+                continue
             data = snapshots.get(role, {})
             if role == "play_together":
                 data = {"last_game": data.get("last_game")} if data.get("last_game") else {}
@@ -288,6 +385,67 @@ class SelfCognition(Star):
                 }
             )
 
+    def companion_observe(self, packet):
+        source, origin, kind = packet.get("source"), packet.get("origin", ""), packet.get("kind")
+        if (
+            source not in {"play_together", "self_amusement", "codex_bridge"}
+            or not self.allowed(origin)
+            or not self.config.get("interop_enabled", True)
+            or not self.config.get("link_" + source, True)
+            or kind not in {"game_turn", "leisure_experience", "initiative", "task_result", "work_report"}
+        ):
+            return
+        if self.link.peer(source, origin) is None:
+            return
+        states = [
+            s
+            for s in self.memory.states.values()
+            if conversation_key(s["origin"]) == conversation_key(origin) and not s["paused"]
+        ]
+        data = packet.get("data", {})
+        if len(states) > 1:
+            states = [s for s in states if data.get("persona") and s.get("persona_prompt") == data["persona"]]
+        if len(states) != 1:
+            return
+        state = states[0]
+        details = {
+            key: value
+            for key, value in data.items()
+            if key
+            in {
+                "game",
+                "action",
+                "outcome",
+                "human_text",
+                "reply",
+                "idea",
+                "private_note",
+                "materials",
+                "text",
+                "summary",
+            }
+        }
+        if not details:
+            return
+        evidence = json.dumps({"source": source, "kind": kind, "experience": details}, ensure_ascii=False)[:16000]
+        self.enqueue(
+            {
+                "id": digest(state["id"], source, packet.get("id") or evidence),
+                "scope": state["id"],
+                "origin": origin,
+                "generation": state["generation"],
+                "persona_id": state["persona"],
+                "persona": state.get("persona_prompt", ""),
+                "actor": "self",
+                "name": "我",
+                "human": evidence,
+                "reply": "",
+                "source_kind": "companion",
+                "provider_id": "",
+                "captured": time.time(),
+            }
+        )
+
     async def process(self, job):
         state = await self.memory.call(self.store.scope, job["scope"])
         if not state or not self.allowed(job["origin"]) or state["paused"] or state["generation"] != job["generation"]:
@@ -298,7 +456,15 @@ class SelfCognition(Star):
         }
         payload["known"] = recalled
         payload["mentioned_users"] = job.get("mentioned_users", [])
-        provider = job["provider_id"] or await self.context.get_current_chat_provider_id(job["origin"])
+        payload["speakers"] = job.get("speakers", [{"id": job["actor"], "name": job["name"]}])
+        payload["people_known"] = {
+            speaker["id"]: self.memory.recall(job["scope"], speaker["id"], "", 3)["portrait"]
+            for speaker in payload["speakers"]
+        }
+        payload["now"] = datetime.now(ZoneInfo(str(self.config.get("timezone", "Asia/Shanghai")))).isoformat()
+        payload["companion"] = self.companions.get(job["origin"], {})
+        self.provider_cache[job["origin"]] = await self.context.get_current_chat_provider_id(job["origin"])
+        provider = text(self.config.get("analysis_provider_id"), 200) or self.provider_cache[job["origin"]]
         async with asyncio.timeout(self.n("analysis_timeout_seconds", 60, 5, 180)):
             response = await self.context.llm_generate(
                 chat_provider_id=provider, system_prompt=REFLECT_SYSTEM, prompt=json.dumps(payload, ensure_ascii=False)
@@ -309,10 +475,13 @@ class SelfCognition(Star):
             response.completion_text,
             job["human"],
             companion=job["source_kind"] == "companion",
-            known_entities=recalled["entities"] + job.get("mentioned_users", []),
+            known_entities=recalled["entities"] + job.get("mentioned_users", []) + payload["speakers"],
+            reply=job["reply"],
         )
         if not self.config.get("curiosity_enabled", True):
             result["curiosity"] = []
+            for person in result.get("people", []):
+                person["curiosity"] = []
         applied = await self.memory.call(self.store.apply, job, result)
         if applied:
             await self.memory.refresh(job["scope"])
@@ -323,7 +492,8 @@ class SelfCognition(Star):
             self.wake.clear()
             eligible = [s["id"] for s in self.memory.states.values() if not s["paused"] and self.allowed(s["origin"])]
             job = None
-            if not self.chatting():
+            independent = await self.independent_provider() if self.chatting() else False
+            if not self.chatting() or independent:
                 job = await self.memory.call(
                     self.store.next_batch,
                     time.time(),
@@ -332,8 +502,9 @@ class SelfCognition(Star):
                     int(self.n("reflection_batch_turns", 6, 1, 30)),
                     self.n("reflection_max_wait_minutes", 10, 1, 60) * 60,
                 )
-            if job and not self.chatting():
+            if job and (not self.chatting() or independent):
                 try:
+                    self.analysis_independent = independent
                     self.analysis_task = asyncio.create_task(self.process(job))
                     if await self.analysis_task:
                         self.last_error = ""
@@ -348,6 +519,7 @@ class SelfCognition(Star):
                     logger.warning("Self-cognition reflection failed (%s)", type(error).__name__)
                 finally:
                     self.analysis_task = None
+                    self.analysis_independent = False
             try:
                 await asyncio.wait_for(self.wake.wait(), timeout=5)
             except TimeoutError:
@@ -415,6 +587,7 @@ class SelfCognition(Star):
                                 "persona": state.get("persona_prompt", ""),
                                 "memory": recalled,
                                 "question": question["question"],
+                                "intention": question if question.get("intent_id") else {},
                                 "now": datetime.now(
                                     ZoneInfo(str(self.config.get("timezone", "Asia/Shanghai")))
                                 ).isoformat(),
@@ -443,9 +616,12 @@ class SelfCognition(Star):
             async with asyncio.timeout(30):
                 sent = await self.context.send_message(origin, MessageChain(chain=[Plain(message)]))
             if sent:
-                await self.memory.call(
-                    self.store.mark_question, state["id"], question["id"], now, proactive=True, message=message
-                )
+                if question.get("intent_id"):
+                    await self.memory.call(self.store.mark_intention, state["id"], question["intent_id"], message, now)
+                else:
+                    await self.memory.call(
+                        self.store.mark_question, state["id"], question["id"], now, proactive=True, message=message
+                    )
                 await self.memory.refresh(state["id"])
                 self.link.state["last_sent"] = now
         except asyncio.CancelledError:
@@ -459,6 +635,7 @@ class SelfCognition(Star):
         while not self.closing:
             try:
                 now = time.time()
+                self.link.connect()
                 await self.memory.call(self.store.prune, int(self.n("raw_retention_days", 30, 0, 3650)), now)
                 for state in list(self.memory.states.values()):
                     if self.allowed(state["origin"]) and not state["paused"]:
@@ -474,7 +651,7 @@ class SelfCognition(Star):
 
     def companion_snapshot(self, origin=""):
         # No origin means no cross-conversation memory dump. New peers can opt in.
-        if not origin or not self.allowed(origin):
+        if not origin or not self.allowed(origin) or not self.config.get("interop_enabled", True):
             return {}
         scopes = [
             s
@@ -483,7 +660,31 @@ class SelfCognition(Star):
         ]
         if len(scopes) != 1:
             return {}  # Ambiguous persona: do not mix identities for old protocol callers.
-        return self.memory.recall(scopes[0]["id"], limit=4)
+        recalled = self.memory.recall(scopes[0]["id"], limit=3)
+        portraits = self.memory.views.get(scopes[0]["id"], {}).get("portraits", {})
+        names = {e["id"]: e["name"] for e in self.memory.views.get(scopes[0]["id"], {}).get("entities", [])}
+        character = {
+            key: (value[:300] if isinstance(value, str) else value[:3]) for key, value in recalled["character"].items()
+        }
+        return {
+            "guidance": "这是持续积累的共同经历与长期相处认识；当前心情、是否想独处等即时状态仍以各插件当前状态补充。",
+            "character": character,
+            "people": {
+                names.get(key, key): {field: value.get(field, "")[:300] for field in ("impression", "style")}
+                for key, value in list(portraits.items())[-5:]
+                if key != "self"
+            },
+            "remembered": [row["content"][:300] for row in recalled["memories"]],
+            "experiences": [e["story"][:400] for e in recalled["experiences"]],
+            "self_reflection": recalled["self_story"].get("impression", "")[:400],
+            "relationships": [line[5:][:350] for line in living_context(recalled, "") if line.startswith("人物之间：")][
+                :5
+            ],
+            "open_threads": [
+                {"kind": i["kind"], "thought": i["thought"][:240], "occasion": i["occasion"], "status": i["status"]}
+                for i in recalled["intentions"][:3]
+            ],
+        }
 
     @filter.command("cognition", alias={"自主认知"})
     async def status(self, event: AstrMessageEvent):
@@ -675,6 +876,8 @@ class SelfCognition(Star):
         if self.closing:
             return
         self.closing = True
+        if ObservedGroup.owner and ObservedGroup.owner() is self:
+            ObservedGroup.owner = None
         self.link.close()
         tasks = [t for t in (self.worker, self.scheduler, self.analysis_task, self.initiative_task) if t is not None]
         for task in tasks:

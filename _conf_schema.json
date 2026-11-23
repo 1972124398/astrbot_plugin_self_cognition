@@ -15,7 +15,7 @@
     "type": "string",
     "default": "",
     "_special": "select_provider",
-    "hint": "自动在后台回顾一段相处，留空沿用会话模型；可选独立 Provider。真人开始聊天时优先回复，尚未完成的回顾留到之后继续。"
+    "hint": "留空与聊天共用模型，聊天生成期间后台让路。选择不同 Provider 时，后台可继续消化经历，减少长期群聊积压；若填的是聊天同一 Provider 仍会让路。"
   },
   "analysis_timeout_seconds": {
     "description": "后台整理超时（秒）",
@@ -83,10 +83,10 @@
     "hint": "从明确互动中提出待解问题，在之后的聊天中按话题自然使用。"
   },
   "proactive_enabled": {
-    "description": "允许空闲时主动提问",
+    "description": "允许空闲时主动联系",
     "type": "bool",
     "default": false,
-    "hint": "根据共同经历和还挂心的话题，用当前角色的口吻自然联系；没有合适的话就等待。还需填写目标私聊 UMO。"
+    "hint": "根据关心、约定、分享欲或好奇心组织自然表达，没到时机就等待；还需填写允许联系的私聊 UMO。"
   },
   "proactive_origins": {
     "description": "允许主动提问的私聊 UMO",
@@ -145,7 +145,7 @@
     "description": "启用可选插件联动",
     "type": "bool",
     "default": true,
-    "hint": "不要求安装任何配套插件。读取已启用插件的会话快照，参与共享发言间隔与空闲占用协调。"
+    "hint": "单独安装完整可用。开启时自动发现同装且启用联动的配套插件，交换认知摘要与游戏、见闻经历；关闭或卸载时撤销兼容登记，无需修改其他插件。"
   },
   "interop_gap_minutes": {
     "description": "联动主动发言最小间隔（分钟）",
@@ -201,7 +201,7 @@
       "max": 30,
       "step": 1
     },
-    "hint": "把一段相处理解完整，而不是每句都提炼一遍。聊天生成中会暂停回顾，优先回复。"
+    "hint": "把一段多人相处理解完整，各人的认识分别保存；共用模型时前台生成优先。"
   },
   "reflection_max_wait_minutes": {
     "description": "一段经历最多等待多久回顾（分钟）",
@@ -212,5 +212,11 @@
       "max": 60,
       "step": 1
     }
+  },
+  "observation_origins": {
+    "description": "允许安静观察群聊的 UMO",
+    "type": "list",
+    "default": [],
+    "hint": "可选。填写后，群里未叫机器人的交谈也可在后台组成共同经历，不主动插话。需先与此群当前人格聊过一次；存在多个人格且无法确定时跳过。留空只记与自己的互动。"
   }
 }
