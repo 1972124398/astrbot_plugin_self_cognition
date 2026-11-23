@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, filter
-from astrbot.api.message_components import Plain
+from astrbot.api.message_components import Plain, At
 from astrbot.api.provider import ProviderRequest
 from astrbot.api.star import Context, Star, StarTools
 from astrbot.core.agent.message import TextPart
@@ -188,6 +188,11 @@ class SelfCognition(Star):
             "persona": self.persona_prompt(event, request),
             "provider_id": text(self.config.get("analysis_provider_id"), 200),
             "captured": time.time(),
+            "mentioned_users": [
+                {"id": actor_key(origin, str(part.qq)), "name": text(part.name, 120) or str(part.qq)}
+                for part in getattr(event, "get_messages", lambda: [])()
+                if isinstance(part, At) and str(part.qq) not in {"all", "0"}
+            ],
         }
         self.frontend[job["id"]] = time.monotonic() + 600
         for task in (self.analysis_task, self.initiative_task):
@@ -292,6 +297,7 @@ class SelfCognition(Star):
             key: job.get(key) for key in ("human", "reply", "turns", "persona", "source_kind", "name", "captured")
         }
         payload["known"] = recalled
+        payload["mentioned_users"] = job.get("mentioned_users", [])
         provider = job["provider_id"] or await self.context.get_current_chat_provider_id(job["origin"])
         async with asyncio.timeout(self.n("analysis_timeout_seconds", 60, 5, 180)):
             response = await self.context.llm_generate(
@@ -303,7 +309,7 @@ class SelfCognition(Star):
             response.completion_text,
             job["human"],
             companion=job["source_kind"] == "companion",
-            known_entities=recalled["entities"],
+            known_entities=recalled["entities"] + job.get("mentioned_users", []),
         )
         if not self.config.get("curiosity_enabled", True):
             result["curiosity"] = []
@@ -409,7 +415,9 @@ class SelfCognition(Star):
                                 "persona": state.get("persona_prompt", ""),
                                 "memory": recalled,
                                 "question": question["question"],
-                            "now": datetime.now(ZoneInfo(str(self.config.get("timezone", "Asia/Shanghai")))).isoformat(),
+                                "now": datetime.now(
+                                    ZoneInfo(str(self.config.get("timezone", "Asia/Shanghai")))
+                                ).isoformat(),
                             },
                             ensure_ascii=False,
                         ),

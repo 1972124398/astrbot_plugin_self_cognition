@@ -12,7 +12,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .cognition import digest, retrieve
+from .cognition import digest, retrieve, relevant_relations
 
 
 class Store:
@@ -43,7 +43,12 @@ class Store:
         CREATE TABLE IF NOT EXISTS relations(
           scope TEXT NOT NULL, source TEXT NOT NULL, target TEXT NOT NULL, label TEXT NOT NULL,
           evidence TEXT NOT NULL, confidence REAL NOT NULL, updated REAL NOT NULL,
-          PRIMARY KEY(scope,source,target));
+          status TEXT NOT NULL DEFAULT 'current', description TEXT NOT NULL DEFAULT '',
+          reporter TEXT NOT NULL DEFAULT '', PRIMARY KEY(scope,source,target,label));
+        CREATE TABLE IF NOT EXISTS relation_history(
+          id INTEGER PRIMARY KEY, scope TEXT NOT NULL, source TEXT NOT NULL, target TEXT NOT NULL,
+          label TEXT NOT NULL, status TEXT NOT NULL, description TEXT NOT NULL,
+          evidence TEXT NOT NULL, reporter TEXT NOT NULL, created REAL NOT NULL);
         CREATE TABLE IF NOT EXISTS feelings(
           job TEXT PRIMARY KEY, scope TEXT NOT NULL, actor TEXT NOT NULL, day TEXT NOT NULL,
           delta REAL NOT NULL, trust_delta REAL NOT NULL, reason TEXT NOT NULL,
@@ -66,10 +71,31 @@ class Store:
         CREATE TABLE IF NOT EXISTS portraits(
           scope TEXT NOT NULL, actor TEXT NOT NULL, content TEXT NOT NULL,
           updated REAL NOT NULL, PRIMARY KEY(scope,actor));
-        PRAGMA user_version=2;
+        PRAGMA user_version=3;
         """)
         if "persona_prompt" not in {r[1] for r in self.db.execute("PRAGMA table_info(scopes)")}:
             self.db.execute("ALTER TABLE scopes ADD COLUMN persona_prompt TEXT NOT NULL DEFAULT ''")
+        if "status" not in {r[1] for r in self.db.execute("PRAGMA table_info(relations)")}:
+            with self.db:
+                self.db.execute("BEGIN")
+                self.db.execute("ALTER TABLE relations RENAME TO relations_v2")
+                self.db.execute(
+                    "CREATE TABLE relations(scope TEXT NOT NULL, source TEXT NOT NULL, target TEXT NOT NULL, "
+                    "label TEXT NOT NULL,evidence TEXT NOT NULL,confidence REAL NOT NULL,updated REAL NOT NULL,"
+                    "status TEXT NOT NULL DEFAULT 'current',description TEXT NOT NULL DEFAULT '',"
+                    "reporter TEXT NOT NULL DEFAULT '',PRIMARY KEY(scope,source,target,label))"
+                )
+                self.db.execute(
+                    "INSERT INTO relations(scope,source,target,label,evidence,confidence,updated) "
+                    "SELECT scope,source,target,label,evidence,confidence,updated FROM relations_v2"
+                )
+                self.db.execute(
+                    "INSERT INTO relation_history(scope,source,target,label,status,description,evidence,reporter,created) "
+                    "SELECT old.scope,old.source,old.target,old.label,'current','',old.evidence,'',old.updated FROM relations_v2 old "
+                    "WHERE NOT EXISTS(SELECT 1 FROM relation_history h WHERE h.scope=old.scope AND h.source=old.source "
+                    "AND h.target=old.target AND h.label=old.label)"
+                )
+                self.db.execute("DROP TABLE relations_v2")
         self.db.commit()
 
     def ensure_scope(self, scope, origin, persona):
@@ -171,6 +197,9 @@ class Store:
             chosen = values[:12]
             job = dict(chosen[0][1])
             job["member_ids"] = [row["id"] for row, _ in chosen]
+            job["mentioned_users"] = list(
+                {e["id"]: e for _, item in chosen for e in item.get("mentioned_users", [])}.values()
+            )
             job["turns"] = [{k: item.get(k, "") for k in ("human", "reply", "captured", "name")} for _, item in chosen]
             job["human"] = "\n".join(item["human"] for _, item in chosen)
             job["reply"] = "\n".join(item["reply"] for _, item in chosen)
@@ -184,6 +213,12 @@ class Store:
             return False
         if job["source_kind"] == "dialogue":
             self.touch(job["scope"], job["actor"], job["name"], job.get("captured", time.time()))
+            with self.db:
+                self.db.executemany(
+                    "INSERT INTO entities(scope,id,name,kind) VALUES(?,?,?,'user') "
+                    "ON CONFLICT(scope,id) DO UPDATE SET name=excluded.name",
+                    [(job["scope"], e["id"], e["name"]) for e in job.get("mentioned_users", [])],
+                )
         if job.get("persona"):
             with self.db:
                 self.db.execute("UPDATE scopes SET persona_prompt=? WHERE id=?", (job["persona"], job["scope"]))
@@ -234,6 +269,10 @@ class Store:
         companion = job["source_kind"] == "companion"
 
         def entity(label):
+            if label not in {"$speaker", "$self"}:
+                known = self.db.execute("SELECT id FROM entities WHERE scope=? AND id=?", (scope, label)).fetchone()
+                if known:
+                    return known["id"]
             key = actor if label == "$speaker" else ("self" if label == "$self" else "named:" + digest(label)[:24])
             name = job["name"] if label == "$speaker" else ("我" if label == "$self" else label)
             self.db.execute(
@@ -278,17 +317,33 @@ class Store:
                 )
             if not companion:
                 for row in result["relations"]:
+                    source, target = entity(row["source"]), entity(row["target"])
+                    status, description = row.get("status", "current"), row.get("description", "")
+                    previous = self.db.execute(
+                        "SELECT status,description FROM relations WHERE scope=? AND source=? AND target=? AND label=?",
+                        (scope, source, target, row["label"]),
+                    ).fetchone()
+                    if previous is None or (previous["status"], previous["description"]) != (status, description):
+                        self.db.execute(
+                            "INSERT INTO relation_history(scope,source,target,label,status,description,evidence,reporter,created) "
+                            "VALUES(?,?,?,?,?,?,?,?,?)",
+                            (scope, source, target, row["label"], status, description, row["evidence"], actor, now),
+                        )
                     self.db.execute(
-                        "INSERT INTO relations VALUES(?,?,?,?,?,?,?) ON CONFLICT(scope,source,target) DO UPDATE SET "
-                        "label=excluded.label,evidence=excluded.evidence,confidence=excluded.confidence,updated=excluded.updated",
+                        "INSERT INTO relations VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(scope,source,target,label) DO UPDATE SET "
+                        "evidence=excluded.evidence,confidence=excluded.confidence,updated=excluded.updated,status=excluded.status,"
+                        "description=excluded.description,reporter=excluded.reporter",
                         (
                             scope,
-                            entity(row["source"]),
-                            entity(row["target"]),
+                            source,
+                            target,
                             row["label"],
                             row["evidence"],
                             row["confidence"],
                             now,
+                            status,
+                            description,
+                            actor,
                         ),
                     )
                 entity("$speaker")
@@ -376,6 +431,12 @@ class Store:
             r["actor"]: json.loads(r["content"])
             for r in self.db.execute("SELECT * FROM portraits WHERE scope=?", (scope,))
         }
+        data["relation_history"] = [
+            dict(r)
+            for r in self.db.execute(
+                "SELECT * FROM relation_history WHERE scope=? ORDER BY created DESC,id DESC LIMIT 100", (scope,)
+            )
+        ]
         return data
 
     def overview(self):
@@ -409,8 +470,20 @@ class Store:
         ).fetchone()
         relations = [
             dict(r)
-            for r in self.db.execute("SELECT * FROM relations WHERE scope=? ORDER BY updated DESC LIMIT 50", (scope,))
+            for r in self.db.execute("SELECT * FROM relations WHERE scope=? ORDER BY updated DESC LIMIT 800", (scope,))
         ]
+        known_ids = {e["id"] for e in entities}
+        needed = {r[k] for r in relations for k in ("source", "target", "reporter")} - known_ids
+        if needed:
+            entities += [
+                dict(r)
+                for r in self.db.execute(
+                    "SELECT * FROM entities WHERE scope=? AND id IN (" + ",".join("?" for _ in needed) + ")",
+                    (scope, *needed),
+                )
+            ]
+        if limit < 1600:
+            relations = relevant_relations(relations, entities, query, actor, 50)
         questions = [
             dict(r)
             for r in self.db.execute(
@@ -472,6 +545,7 @@ class Store:
                 "memories",
                 "entities",
                 "relations",
+                "relation_history",
                 "feelings",
                 "questions",
                 "jobs",

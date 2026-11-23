@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import copy
 
-from .cognition import retrieve, tokens
+from .cognition import retrieve, tokens, relevant_relations
 
 
 class Memory:
@@ -56,9 +56,12 @@ class Memory:
         return {
             "memories": [{k: v for k, v in row.items() if k != "_terms"} for row in rows],
             "entities": copy.deepcopy(view.get("entities", [])),
-            "relations": copy.deepcopy(view.get("relations", [])),
+            "relations": copy.deepcopy(
+                relevant_relations(view.get("relations", []), view.get("entities", []), query, actor)
+            ),
             "feeling": next((dict(e) for e in view.get("entities", []) if e["id"] == actor), {}),
             "portrait": dict(view.get("portraits", {}).get(actor, {})),
+            "relation_focus": any(e["id"] != "self" and e["name"] and e["name"] in query for e in view.get("entities", [])),
             "self_story": dict(view.get("portraits", {}).get("self", {})),
             "curiosity": [dict(q) for q in view.get("all_questions", []) if q["actor"] == actor][:2],
         }

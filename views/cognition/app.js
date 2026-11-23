@@ -37,6 +37,18 @@ function selected() {
     return $('scope').value;
 }
 
+function groupedRelations(data) {
+    const groups = new Map();
+    for (const row of data.relations) {
+        const key = JSON.stringify([row.source, row.target]);
+        if (!groups.has(key)) groups.set(key, {source: row.source, target: row.target, rows: []});
+        groups.get(key).rows.push(row);
+    }
+    return [...groups.values()];
+}
+
+function tagText(row) { return (row.status === 'ended' ? '曾经：' : '') + row.label; }
+
 function graph(data) {
     const svg = $('graph');
     svg.replaceChildren();
@@ -78,7 +90,7 @@ function graph(data) {
         x: 320 + 220 * Math.cos(2 * Math.PI * i / ids.length),
         y: 190 + 130 * Math.sin(2 * Math.PI * i / ids.length)
     }]));
-    data.relations.forEach(r => {
+    groupedRelations(data).forEach(r => {
         const a = positions.get(r.source),
             b = positions.get(r.target);
         if (!a || !b || r.source === r.target) return;
@@ -99,7 +111,7 @@ function graph(data) {
             y: (a.y + b.y) / 2 - 7,
             'text-anchor': 'middle'
         });
-        label.textContent = r.label;
+        label.textContent = r.rows.map(tagText).join(' · ');
         svg.append(label);
     });
     ids.forEach(id => {
@@ -128,7 +140,7 @@ async function loadScope() {
     $('stats').replaceChildren();
     for (const [label, value] of [
             ['记忆与修订', stats.memories || 0],
-            ['人物关系', stats.relations || 0],
+            ['关系标签', stats.relations || 0],
             ['待整理', stats.pending || 0],
             ['运行状态', state?.paused ? '已暂停' : stats.failed ? `${stats.failed} 项失败` : '正常']
         ]) {
@@ -142,10 +154,24 @@ async function loadScope() {
     });
     graph(data);
     $('relations').replaceChildren();
-    data.relations.forEach(r => {
+    groupedRelations(data).forEach(r => {
         const names = new Map(data.entities.map(e => [e.id, e.name]));
-        const node = el('div', `${names.get(r.source)||r.source} → ${r.label} → ${names.get(r.target)||r.target}`, 'relation');
-        node.append(el('small', `依据：${r.evidence} · 置信度 ${Math.round(r.confidence*100)}%`));
+        const node = el('div', `${names.get(r.source)||r.source} → ${names.get(r.target)||r.target}`, 'relation');
+        const tags = el('div');
+        r.rows.forEach(row => {
+            const tag = el('span', tagText(row), 'tag');
+            tag.title = row.description || row.evidence;
+            tags.append(tag, document.createTextNode(' '));
+        });
+        node.append(tags);
+        [...new Set(r.rows.map(row => row.description).filter(Boolean))].forEach(description => node.append(el('small', description)));
+        const changes = el('details');
+        changes.append(el('summary', '关系的来处与变化'));
+        const history = (data.relation_history || []).filter(h => h.source === r.source && h.target === r.target);
+        for (const h of history.length ? history : r.rows) {
+            changes.append(el('small', `${new Date((h.created || h.updated)*1000).toLocaleDateString()} · ${tagText(h)} · ${names.get(h.reporter)||'聊天中提到'}：${h.evidence}`));
+        }
+        node.append(changes);
         $('relations').append(node);
     });
     $('feelings').replaceChildren();

@@ -11,6 +11,8 @@ from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from astrbot.api.provider import ProviderRequest
+from astrbot.api.message_components import At
+from astrbot_plugin_self_cognition.cognition import actor_key
 from astrbot.api.web import PluginRequest, bind_request_context
 from starlette.requests import Request
 from astrbot.core.message.message_event_result import MessageEventResult, ResultContentType
@@ -326,3 +328,32 @@ class Hooks(unittest.IsolatedAsyncioTestCase):
         ):
             with self.assertRaises(ValueError):
                 self.plugin.validate_settings(value)
+
+    async def test_group_mention_connects_relationship_tags_to_actual_member(self):
+        event = Event("这是我的同事，也是一位老朋友。")
+        event.unified_msg_origin = "test:GroupMessage:123"
+        event.get_messages = lambda: [At(qq="bob", name="小明")]
+        bob = actor_key(event.unified_msg_origin, "bob")
+        self.context.llm_generate.return_value = SimpleNamespace(
+            completion_text=json.dumps(
+                {
+                    "relations": [
+                        {"source": "$speaker", "target": bob, "labels": ["同事", "朋友"], "evidence": "我的同事"}
+                    ]
+                },
+                ensure_ascii=False,
+            )
+        )
+        await self.prepare(event)
+        await self.plugin.response(event, SimpleNamespace(completion_text="原来你们早就认识。", tools_call_args=[]))
+        await self.plugin.delivered(event)
+        await self.plugin.capture_queue.join()
+        self.plugin.worker.cancel()
+        await asyncio.gather(self.plugin.worker, return_exceptions=True)
+        batch = await self.plugin.memory.call(
+            self.plugin.store.next_batch, time.time(), [event.get_extra(TURN)["scope"]], 0
+        )
+        await self.plugin.process(batch)
+        data = self.plugin.memory.recall(batch["scope"], batch["actor"], "小明")
+        self.assertEqual({r["target"] for r in data["relations"]}, {bob})
+        self.assertEqual({r["label"] for r in data["relations"]}, {"朋友", "同事"})
