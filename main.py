@@ -506,6 +506,11 @@ class SelfCognition(Star):
         }
         payload["now"] = datetime.now(ZoneInfo(str(self.config.get("timezone", "Asia/Shanghai")))).isoformat()
         payload["companion"] = self.companions.get(job["origin"], {})
+        if catalog := self.link.sticker_catalog(job["origin"]):
+            payload["sticker_library"] = {
+                "count": len(catalog["items"]),
+                "examples": catalog["items"][:24],
+            }
         self.provider_cache[job["origin"]] = await self.context.get_current_chat_provider_id(job["origin"])
         provider = text(self.config.get("analysis_provider_id"), 200) or self.provider_cache[job["origin"]]
         async with asyncio.timeout(self.n("analysis_timeout_seconds", 60, 5, 180)):

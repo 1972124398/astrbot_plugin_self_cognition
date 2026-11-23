@@ -321,6 +321,7 @@ REFLECT_SYSTEM = """你在后台回想刚才发生的事。persona 是当前实�
 turns 按顺序记录各人的 actor/name/human/reply；speakers 是真人身份。observed 是听别人交谈，companion 是插件活动。
 把一件事理解完整，分清谁说的、自己回复的和转述的。companion 可以留下自己的经历、兴趣和想继续分享或探索的念头，不作为真人态度或好感的依据。
 活动后的分享念头可指向已知的聊天对象，也可以 actor=$self 表示自己的探索兴趣；是否产生由实际人格决定。
+sticker_library 是当前表情库目录，可用于理解聊天梗和表情表达。库里有某张图不代表它已经发过，也不代表任何人的个性或喜好。
 
 按需选择：
 - experience：值得回想的一段具体往事（title/story/feeling/cues），可保留一句原话、共同的玩笑或当时的反应，不必升华成道理。

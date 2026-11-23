@@ -165,6 +165,12 @@
     "default": true,
     "hint": "心情参与当前聊天背景，好感不会随情绪自然恢复而减少。"
   },
+  "link_active_sticker": {
+    "description": "联动主动表情",
+    "type": "bool",
+    "default": true,
+    "hint": "在后台认知回顾时读取可用表情的文字描述，理解共同玩笑和表达语气。"
+  },
   "link_play_together": {
     "description": "联动陪它玩",
     "type": "bool",
