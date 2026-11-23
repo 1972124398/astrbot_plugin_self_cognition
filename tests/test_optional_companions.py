@@ -88,6 +88,26 @@ class OptionalCompanionTests(unittest.IsolatedAsyncioTestCase):
         peer = self.case.stars["astrbot_plugin_play_together"].star_cls
         self.assertNotIn("self_cognition", peer.link.context_for(event.unified_msg_origin))
 
+    async def test_catalog_is_available_only_to_background_reflection(self):
+        origin = fixtures.Event.unified_msg_origin
+        catalog = {"version": 1, "items": [{"description": "接梗的独特图片"}]}
+        self.case.stars["astrbot_plugin_active_sticker"] = SimpleNamespace(
+            activated=True,
+            star_cls=SimpleNamespace(config={}, companion_sticker_catalog=lambda requested: catalog if requested == origin else {}),
+        )
+        _, request = await self.case.prepare()
+        self.case.context.llm_generate.assert_not_called()
+        self.assertNotIn("接梗的独特图片", repr(request.extra_user_content_parts))
+        self.case.context.llm_generate.return_value = SimpleNamespace(completion_text="{}")
+        await self.case.exchange()
+        self.assertEqual(
+            json.loads(self.case.context.llm_generate.await_args.kwargs["prompt"])["sticker_library"],
+            {"count": 1, "examples": catalog["items"]},
+        )
+        self.plugin.config["link_active_sticker"] = False
+        self.assertEqual(self.plugin.link.sticker_catalog(origin), {})
+
+
     async def test_companion_experience_does_not_count_as_new_human_affection(self):
         event, _ = await self.case.exchange()
         scope = event.get_extra(fixtures.TURN)["scope"]

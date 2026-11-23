@@ -108,6 +108,19 @@ class CompanionLink:
         except Exception:
             return {}
 
+    def sticker_catalog(self, origin):
+        """Read the active sticker library for background reflection."""
+        peer = self.peer("active_sticker", origin)
+        read = getattr(peer, "companion_sticker_catalog", None)
+        if not read:
+            return {}
+        try:
+            value = read(origin)
+            return value if isinstance(value, dict) and value.get("version") == 1 and isinstance(value.get("items"), list) else {}
+        except Exception:
+            return {}
+
+
     def snapshots(self, origin):
         return {role: data for role in ROLES if (data := self.snapshot(role, origin))}
 
