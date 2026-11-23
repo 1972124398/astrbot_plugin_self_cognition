@@ -176,3 +176,49 @@ class OptionalCompanionTests(unittest.IsolatedAsyncioTestCase):
         self.plugin.store.touch(scope, actor, "Alice", time.time())
         own = next(i for i in self.plugin.store.dashboard(scope)["intentions"] if i["actor"] == "self")
         self.assertEqual(own["status"], "offered")
+
+    async def test_confirmed_speech_is_shared_once_and_available_to_peer_planning(self):
+        event, _ = await self.case.exchange()
+        scope = event.get_extra(fixtures.TURN)["scope"]
+        _, peer = self.install("self_amusement")
+        packets = []
+        peer.companion_observe = packets.append
+        self.plugin.link.connect()
+        with self.plugin.store.db:
+            self.plugin.store.db.execute("UPDATE scopes SET last_human=? WHERE id=?", (time.time() - 90000, scope))
+        await self.plugin.memory.refresh(scope)
+        self.plugin.config.update(
+            proactive_enabled=True, proactive_origins=[event.unified_msg_origin], quiet_start=0, quiet_end=0
+        )
+        message = "上次说在练琴，那首曲子后来练顺了吗？"
+        self.case.context.llm_generate.return_value = SimpleNamespace(completion_text=message)
+        await self.plugin.curiosity_step(self.plugin.memory.states[scope])
+        self.assertEqual(len(packets), 1)
+        self.assertEqual(packets[0]["kind"], "initiative")
+        self.assertEqual(packets[0]["data"]["text"], message)
+        background = peer.link.context_for(event.unified_msg_origin)["self_cognition"]
+        self.assertIn(message, background["recent_own_messages"])
+        self.plugin.link.sent(event.unified_msg_origin, message, packets[0]["id"])
+        self.assertEqual(len(packets), 1)
+        self.plugin.config["link_self_amusement"] = False
+        self.plugin.link.sent(event.unified_msg_origin, "这条不应联动。", "disabled-link")
+        self.assertEqual(len(packets), 1)
+
+    async def test_failed_platform_send_does_not_claim_speech_to_companions(self):
+        event, _ = await self.case.exchange()
+        scope = event.get_extra(fixtures.TURN)["scope"]
+        _, peer = self.install("self_amusement")
+        packets = []
+        peer.companion_observe = packets.append
+        self.plugin.link.connect()
+        with self.plugin.store.db:
+            self.plugin.store.db.execute("UPDATE scopes SET last_human=? WHERE id=?", (time.time() - 90000, scope))
+        await self.plugin.memory.refresh(scope)
+        self.plugin.config.update(
+            proactive_enabled=True, proactive_origins=[event.unified_msg_origin], quiet_start=0, quiet_end=0
+        )
+        self.case.context.llm_generate.return_value = SimpleNamespace(completion_text="那首曲子后来怎么样？")
+        self.case.context.send_message.return_value = False
+        await self.plugin.curiosity_step(self.plugin.memory.states[scope])
+        self.assertEqual(packets, [])
+        self.assertEqual(self.plugin.companion_snapshot(event.unified_msg_origin)["recent_own_messages"], [])

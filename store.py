@@ -588,10 +588,10 @@ class Store(LifeStore):
                 self.db.execute(f"DELETE FROM {table} WHERE scope=?", (scope,))
             self.db.execute("UPDATE scopes SET generation=generation+1,last_human=0,last_sent=0 WHERE id=?", (scope,))
 
-    def initiative(self, scope, now, allow_questions=True):
+    def initiative(self, scope, now, allow_questions=True, considered=()):
         if self.db.execute("SELECT 1 FROM questions WHERE scope=? AND status='sent'", (scope,)).fetchone():
             return None
-        intent = self.next_intention(scope, now, allow_questions)
+        intent = self.next_intention(scope, now, allow_questions, considered)
         if intent:
             return intent
         if self.db.execute("SELECT 1 FROM intentions WHERE scope=? AND status='sent'", (scope,)).fetchone():

@@ -100,6 +100,7 @@ class Memory:
         questions = [dict(q) for q in view.get("all_questions", []) if q["actor"] == actor][:2]
         portrait = dict(view.get("portraits", {}).get(actor, {}))
         character = copy.deepcopy(view.get("character", {}))
+        own_interest = character.get("interests", [])[:1]
         self_story = dict(view.get("portraits", {}).get("self", {}))
         if conversation:
             # Remembering nothing is useful: ordinary greetings need no old stories.
@@ -126,6 +127,9 @@ class Memory:
                     portrait[key] = portrait[key][:180]
             for key in ("preferences", "interests"):
                 character[key] = [item for item in character.get(key, []) if terms & recall_terms(item)]
+            if not character.get("interests") and own_interest:
+                # One brief interest is part of being oneself, not a story to retell.
+                character["interests"] = [own_interest[0][:120]]
             if not terms & recall_terms(character.get("outlook", "")):
                 character.pop("outlook", None)
             if not terms & recall_terms(self_story.get("impression", "")):

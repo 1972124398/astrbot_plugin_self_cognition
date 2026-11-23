@@ -367,7 +367,7 @@ def living_context(recalled, name, preferences="", companion=None):
     for key, title in (
         ("preferences", "以往的喜好"),
         ("habits", "相处中形成的一些习惯"),
-        ("interests", "之前感兴趣的事"),
+        ("interests", "自己的兴趣（自然取用，不必提起）"),
     ):
         if character.get(key):
             lines.append(title + "：" + "；".join(character[key]))

@@ -111,6 +111,32 @@ class CompanionLink:
     def snapshots(self, origin):
         return {role: data for role in ROLES if (data := self.snapshot(role, origin))}
 
+    def sent(self, origin, message, event_id=""):
+        """Share confirmed speech through the peers' existing v1 observation hook."""
+        self.state["last_sent"] = time.time()
+        packet = {
+            "version": 1,
+            "source": "self_cognition",
+            "kind": "initiative",
+            "origin": origin,
+            "id": event_id or uuid.uuid4().hex,
+            "time": time.time(),
+            "data": {"text": message},
+        }
+        seen = self.state["seen"]
+        for role in ROLES:
+            receive = getattr(self.peer(role, origin), "companion_observe", None)
+            key = (role, packet["id"])
+            if not receive or key in seen:
+                continue
+            try:
+                receive(copy.deepcopy(packet))
+                seen[key] = packet["time"]
+            except Exception:
+                continue
+        while len(seen) > 256:
+            seen.pop(next(iter(seen)))
+
     def begin(self, event):
         token = event.get_extra("w1_companion_turn")
         if not isinstance(token, str):

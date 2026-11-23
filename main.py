@@ -76,6 +76,7 @@ class SelfCognition(Star):
         self.initiative_task = None
         self.companions = {}
         self.initiative_wait = {}
+        self.initiative_considered = {}
         self.analysis_independent = False
         self.front_origins = {}
         self.provider_cache = {}
@@ -312,6 +313,7 @@ class SelfCognition(Star):
                 ):
                     task.cancel()
         state["last_human"] = job["captured"]
+        self.initiative_considered.pop(scope, None)
         self.enqueue(job, activity_only=True)
         recalled = self.memory.recall(scope, actor, human, int(self.n("recall_limit", 6, 1, 30)), conversation=True)
         job["questions"] = recalled["curiosity"]
@@ -574,8 +576,15 @@ class SelfCognition(Star):
             return
         if now - state["last_human"] > self.n("proactive_max_idle_days", 7, 1, 365) * 86400:
             return
+        considered = self.initiative_considered.setdefault(state["id"], set())
+        pending = {
+            i["id"] for i in self.memory.views.get(state["id"], {}).get("intentions", []) if i["status"] == "pending"
+        }
+        considered.intersection_update(pending)
+        if pending and considered == pending:
+            considered.clear()
         question = await self.memory.call(
-            self.store.initiative, state["id"], now, self.config.get("curiosity_enabled", True)
+            self.store.initiative, state["id"], now, self.config.get("curiosity_enabled", True), tuple(considered)
         )
         if not question:
             return
@@ -627,6 +636,7 @@ class SelfCognition(Star):
                 reply = await self.initiative_task
             question, message = choose_initiative(reply.completion_text, choices)
             if not question or not message or message.strip().upper() == "WAIT":
+                considered.update(idea["intent_id"] for idea in choices if idea.get("intent_id"))
                 self.initiative_wait[state["id"]] = now + 3600
                 return
             current = await self.memory.call(self.store.scope, state["id"])
@@ -651,7 +661,7 @@ class SelfCognition(Star):
                         self.store.mark_question, state["id"], question["id"], now, proactive=True, message=message
                     )
                 await self.memory.refresh(state["id"])
-                self.link.state["last_sent"] = now
+                self.link.sent(origin, message, event_id=f"cognition:{state['id']}:{question['id']}:{now}")
         except asyncio.CancelledError:
             if asyncio.current_task().cancelling():
                 raise
@@ -690,6 +700,12 @@ class SelfCognition(Star):
             return {}  # Ambiguous persona: do not mix identities for old protocol callers.
         recalled = self.memory.recall(scopes[0]["id"], limit=3)
         portraits = self.memory.views.get(scopes[0]["id"], {}).get("portraits", {})
+        spoken = list(
+            dict.fromkeys(
+                [i["last_message"] for i in recalled["intentions"] if i.get("last_message")]
+                + [p["last_outreach"] for p in portraits.values() if p.get("last_outreach")]
+            )
+        )[:3]
         names = {e["id"]: e["name"] for e in self.memory.views.get(scopes[0]["id"], {}).get("entities", [])}
         character = {
             key: (value[:300] if isinstance(value, str) else value[:3]) for key, value in recalled["character"].items()
@@ -697,6 +713,7 @@ class SelfCognition(Star):
         return {
             "guidance": "这是持续积累的共同经历与长期相处认识；当前心情、是否想独处等即时状态仍以各插件当前状态补充。",
             "character": character,
+            "recent_own_messages": [message[:500] for message in spoken] if scopes[0]["last_sent"] else [],
             "people": {
                 names.get(key, key): {field: value.get(field, "")[:300] for field in ("impression", "style")}
                 for key, value in list(portraits.items())[-5:]
