@@ -53,9 +53,9 @@ class Memory:
             },
         )
 
-    def recall(self, scope, actor="", query="", limit=8):
+    def recall(self, scope, actor="", query="", limit=8, *, conversation=False):
         view = self.views.get(scope, {})
-        previous = self.focus.get((scope, actor))
+        previous = self.focus.get((scope, actor)) if conversation else None
         effective = query
         if (
             previous
@@ -63,21 +63,41 @@ class Memory:
             and any(word in query for word in ("他", "她", "那个", "这件", "后来", "继续", "上次", "怎么样"))
         ):
             effective += " " + previous[0]
-        if query:
+        if query and conversation:
             self.focus[scope, actor] = (effective[-600:], time.monotonic())
-        rows = retrieve(view.get("memories", []), effective, actor, limit)
-        terms = tokens(effective)
+        terms = recall_terms(effective)
+        candidates = view.get("memories", [])
+        if conversation:
+            candidates = [row for row in candidates if terms & row.get("_terms", set())]
+        rows = retrieve(candidates, effective, actor, limit)
         events = sorted(
             view.get("experiences", []),
             key=lambda e: (len(terms & e.get("_terms", set())) * 4 + (actor in e["actors"]), e["created"]),
             reverse=True,
         )[:2]
+        relations = relevant_relations(view.get("relations", []), view.get("entities", []), effective, actor)
+        intentions = [dict(i) for i in view.get("intentions", []) if not actor or i["actor"] == actor]
+        questions = [dict(q) for q in view.get("all_questions", []) if q["actor"] == actor][:2]
+        if conversation:
+            # Remembering nothing is useful: ordinary greetings need no old stories.
+            events = [event for event in events if terms & event.get("_terms", set())]
+            named = {
+                e["id"]
+                for e in view.get("entities", [])
+                if e["id"] != "self" and any(name and name in effective for name in [e["name"], *e.get("aliases", [])])
+            }
+            relations = [
+                r
+                for r in relations
+                if named & {r["source"], r["target"]}
+                or terms & recall_terms(r["label"] + " " + r.get("description", ""))
+            ]
+            intentions = [i for i in intentions if terms & recall_terms(i["topic"] + " " + i["thought"])]
+            questions = [q for q in questions if terms & recall_terms(q["question"])]
         return {
             "memories": [{k: v for k, v in row.items() if k != "_terms"} for row in rows],
             "entities": copy.deepcopy(view.get("entities", [])),
-            "relations": copy.deepcopy(
-                relevant_relations(view.get("relations", []), view.get("entities", []), effective, actor)
-            ),
+            "relations": copy.deepcopy(relations),
             "feeling": next((dict(e) for e in view.get("entities", []) if e["id"] == actor), {}),
             "portrait": dict(view.get("portraits", {}).get(actor, {})),
             "relation_focus": any(
@@ -86,8 +106,8 @@ class Memory:
             "self_story": dict(view.get("portraits", {}).get("self", {})),
             "character": copy.deepcopy(view.get("character", {})),
             "experiences": [{k: v for k, v in event.items() if k != "_terms"} for event in events],
-            "intentions": [dict(i) for i in view.get("intentions", []) if not actor or i["actor"] == actor],
-            "curiosity": [dict(q) for q in view.get("all_questions", []) if q["actor"] == actor][:2],
+            "intentions": intentions,
+            "curiosity": [] if intentions else questions,
         }
 
     @staticmethod
@@ -106,3 +126,30 @@ class Memory:
         for event in view.get("experiences", []):
             event["_terms"] = tokens(event["title"] + " " + event["story"] + " " + " ".join(event["cues"]))
         return view
+
+
+def recall_terms(value):
+    return tokens(value) - {
+        "今天",
+        "最近",
+        "现在",
+        "这个",
+        "那个",
+        "然后",
+        "后来",
+        "我们",
+        "你们",
+        "他们",
+        "她们",
+        "什么",
+        "怎么",
+        "么样",
+        "一下",
+        "一点",
+        "可以",
+        "事情",
+        "时候",
+        "你好",
+        "早上",
+        "晚上",
+    }

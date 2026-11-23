@@ -127,11 +127,28 @@ class SelfCognition(Star):
         persona = event.get_extra("_trace_persona_id")
         if persona == "[%None]":
             return ""
+        if persona == "_chatui_default_":
+            from astrbot.core.astr_main_agent_resources import CHATUI_SPECIAL_DEFAULT_PERSONA_PROMPT
+
+            return (
+                CHATUI_SPECIAL_DEFAULT_PERSONA_PROMPT
+                if event.get_extra("enable_default_system_prompt") is not False
+                else ""
+            )
         if persona and persona not in {"default", "_chatui_default_"}:
             value = self.context.persona_manager.get_persona_v3_by_id(persona)
             if value:
                 return text(value.get("prompt"), 12000)
         return text(request.system_prompt, 12000)
+
+    def expression_preferences(self):
+        value = text(self.config.get("behavior_preferences"), 1000)
+        # Older releases supplied an opinionated default. Leave custom preferences intact.
+        old_defaults = {
+            "像自己一样相处，有自己的喜好、玩心和小脾气；熟悉后自然接梗、惦记共同经历。想问时再问，不用每轮都热情，也不需要反复说我记得。",
+            "自然记住共同经历，有自己的偏好和边界；相关时回忆，关心时再问，不把聊天变成盘问。",
+        }
+        return "" if value in old_defaults else value
 
     async def initialize(self):
         await self.memory.load()
@@ -295,14 +312,12 @@ class SelfCognition(Star):
                     task.cancel()
         state["last_human"] = job["captured"]
         self.enqueue(job, activity_only=True)
-        recalled = self.memory.recall(scope, actor, human, int(self.n("recall_limit", 6, 1, 30)))
+        recalled = self.memory.recall(scope, actor, human, int(self.n("recall_limit", 6, 1, 30)), conversation=True)
         job["questions"] = recalled["curiosity"]
         event.set_extra(TURN, job)
         if not self.config.get("curiosity_enabled", True):
             recalled["curiosity"] = []
-        lines = living_context(
-            recalled, name, text(self.config.get("behavior_preferences"), 1000), self.companions.get(origin)
-        )
+        lines = living_context(recalled, name, self.expression_preferences(), self.companions.get(origin))
         budget = int(self.n("context_char_limit", 4500, 1000, 30000))
         while lines and len("\n".join(lines)) > budget:
             lines.pop()

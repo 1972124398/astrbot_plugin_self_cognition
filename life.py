@@ -42,23 +42,24 @@ class LifeStore:
         row = self.db.execute("SELECT name FROM entities WHERE scope=? AND id=?", (scope, actor)).fetchone()
         if not row or actor == "self":
             return
-        # A scene can include several people; each person's feeling is recorded separately.
-        day = datetime.fromtimestamp(now, timezone.utc).date().isoformat()
         delta = person.get("affection", 0)
-        self.db.execute(
-            "INSERT INTO feelings VALUES(?,?,?,?,?,?,?,?,?)",
-            (
-                digest(job["id"], actor),
-                scope,
-                actor,
-                day,
-                delta,
-                person.get("trust", 0),
-                person.get("feeling_reason", ""),
-                person.get("feeling_evidence", ""),
-                now,
-            ),
-        )
+        if delta or person.get("trust"):
+            # No feeling change needs no ledger entry; quiet interactions can stay quiet.
+            day = datetime.fromtimestamp(now, timezone.utc).date().isoformat()
+            self.db.execute(
+                "INSERT INTO feelings VALUES(?,?,?,?,?,?,?,?,?)",
+                (
+                    digest(job["id"], actor),
+                    scope,
+                    actor,
+                    day,
+                    delta,
+                    person.get("trust", 0),
+                    person.get("feeling_reason", ""),
+                    person.get("feeling_evidence", ""),
+                    now,
+                ),
+            )
         self.db.execute(
             "UPDATE entities SET affection=affection+?,trust=max(0,min(1,trust+?)) WHERE scope=? AND id=?",
             (delta, person.get("trust", 0), scope, actor),
@@ -182,7 +183,7 @@ class LifeStore:
             return None
         row = self.db.execute(
             "SELECT * FROM intentions WHERE scope=? AND status='pending' AND not_before<=? "
-            "ORDER BY CASE kind WHEN 'promise' THEN 0 WHEN 'care' THEN 1 ELSE 2 END,updated DESC LIMIT 1",
+            "ORDER BY updated DESC,id DESC LIMIT 1",
             (scope, now),
         ).fetchone()
         if row:

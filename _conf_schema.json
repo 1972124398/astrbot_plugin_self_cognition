@@ -71,16 +71,16 @@
     "hint": "0 表示永久保留；提炼记忆及其证据、关系、好感账本永久保存。未完成的整理任务仍保留待处理文本。"
   },
   "behavior_preferences": {
-    "description": "拟人相处偏好",
+    "description": "补充表达偏好（可留空）",
     "type": "text",
-    "default": "像自己一样相处，有自己的喜好、玩心和小脾气；熟悉后自然接梗、惦记共同经历。想问时再问，不用每轮都热情，也不需要反复说我记得。",
-    "hint": "补充当前人格的表达偏好。不会替换 AstrBot 主角色提示词。"
+    "default": "",
+    "hint": "默认只遵循当前实际人格提示词，不统一要求关心、追问或玩闹。可补充个人偏好；不提供人格分类或固定行为模板。"
   },
   "curiosity_enabled": {
-    "description": "启用自然好奇与追问",
+    "description": "允许人格自然产生好奇",
     "type": "bool",
     "default": true,
-    "hint": "从明确互动中提出待解问题，在之后的聊天中按话题自然使用。"
+    "hint": "允许在后台留下确实想了解的事；具体是否好奇、是否追问由人格决定，不要求每段聊天都生成问题。"
   },
   "proactive_enabled": {
     "description": "允许空闲时主动联系",
@@ -89,10 +89,10 @@
     "hint": "根据关心、约定、分享欲或好奇心组织自然表达，没到时机就等待；还需填写允许联系的私聊 UMO。"
   },
   "proactive_origins": {
-    "description": "允许主动提问的私聊 UMO",
+    "description": "允许主动联系的私聊 UMO",
     "type": "list",
     "default": [],
-    "hint": "逐行填写完整 UMO。当前版本主动提问仅支持私聊。必须先产生真实对话与待解问题。"
+    "hint": "逐行填写完整 UMO。开启主动联系并有自然想说的事时才会考虑，角色仍可选择不联系。"
   },
   "proactive_gap_hours": {
     "description": "主动提问最小间隔（小时）",
