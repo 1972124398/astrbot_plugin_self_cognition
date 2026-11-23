@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>自主认知 · 相处留下的痕迹</title><link rel="stylesheet" href="./style.css"></head>
+<body>
+  <header><div><span class="eyebrow">SELF COGNITION / 自主认知</span><h1>相处，留下痕迹。</h1><p>记得经历，理解关系，慢慢形成自己的判断。</p></div><button id="refresh">刷新认知</button></header>
+  <div id="notice" role="status" aria-live="polite"></div>
+  <nav aria-label="认知面板"><button class="active" data-tab="memory">记忆与关系</button><button data-tab="settings">行为与配置</button></nav>
+  <main>
+    <section id="memory" class="panel">
+      <div class="toolbar"><label>会话与人格 <select id="scope"><option value="">尚无对话</option></select></label><label>寻找回忆 <input id="query" placeholder="例如：无糖茶、上次一起玩的游戏"></label><button id="search">检索</button></div>
+      <div id="stats" class="stats"></div>
+      <div class="columns"><article><div class="section-head"><h2>人物关系</h2><span>箭头表示陈述方向</span></div><svg id="graph" viewBox="0 0 640 380" role="img" aria-label="人物关系图谱"></svg><div id="relations"></div></article><article><div class="section-head"><h2>长期相处</h2><span>积累不会随时间消失</span></div><div id="feelings"></div><h3>还想了解</h3><div id="questions"></div></article></div>
+      <article><div class="section-head"><h2>留下的回忆</h2><span>每条记忆，都能查看来处</span></div><div id="memories" class="memory-grid"><p class="empty">开始聊天后，值得记住的经历会出现在这里。</p></div></article>
+      <div class="actions"><button data-action="pause">暂停此会话认知</button><button data-action="resume">恢复</button><button data-action="retry">重试失败整理</button><button class="danger" data-action="clear_confirm">清空此会话认知</button><span>操作仅作用于上方选定的会话和人格。</span></div>
+    </section>
+    <section id="settings" class="panel" hidden><article><div class="section-head"><div><h2>让相处有自己的节奏</h2><p>与 AstrBot 插件配置共用同一份设置。主动联系默认关闭。</p></div><button id="save" class="primary">保存配置</button></div><form id="settings-form"></form></article></section>
+  </main>
+  <footer>自主认知 · 本地持久化 · 独立运行与可选联动</footer>
+  <script type="module" src="./app.js"></script>
+</body></html>

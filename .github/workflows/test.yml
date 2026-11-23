@@ -1,0 +1,18 @@
+name: Tests
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ['3.12', '3.13']
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: astrbot_plugin_self_cognition
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m pip install 'astrbot>=4.29.4,<5' ruff -r astrbot_plugin_self_cognition/requirements.txt
+      - run: python -m ruff check astrbot_plugin_self_cognition
+      - run: python -m unittest discover -s astrbot_plugin_self_cognition/tests -v
