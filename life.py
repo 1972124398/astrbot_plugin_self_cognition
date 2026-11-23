@@ -30,11 +30,13 @@ class LifeStore:
         """)
         if "cues" not in {r[1] for r in self.db.execute("PRAGMA table_info(memories)")}:
             self.db.execute("ALTER TABLE memories ADD COLUMN cues TEXT NOT NULL DEFAULT '[]'")
+        if "source_kind" not in {r[1] for r in self.db.execute("PRAGMA table_info(experiences)")}:
+            self.db.execute("ALTER TABLE experiences ADD COLUMN source_kind TEXT NOT NULL DEFAULT 'legacy'")
         self.db.execute(
             "INSERT OR IGNORE INTO relation_opinions SELECT scope,source,target,label,reporter,status,description,evidence,updated "
             "FROM relations WHERE reporter!=''"
         )
-        self.db.execute("PRAGMA user_version=4")
+        self.db.execute("PRAGMA user_version=5")
         self.db.commit()
 
     def save_person(self, job, person, now):
@@ -88,8 +90,11 @@ class LifeStore:
         experience = result.get("experience", {})
         if experience.get("story"):
             actors = list(dict.fromkeys(t.get("actor", job["actor"]) for t in job.get("turns", [job])))
+            kind = job["source_kind"]
+            if kind != "companion" and job.get("turns"):
+                kind = "dialogue" if any(t.get("reply") for t in job["turns"]) else "observed"
             self.db.execute(
-                "INSERT OR IGNORE INTO experiences VALUES(?,?,?,?,?,?,?,?)",
+                "INSERT OR IGNORE INTO experiences(id,scope,title,story,actors,cues,feeling,created,source_kind) VALUES(?,?,?,?,?,?,?,?,?)",
                 (
                     job["id"],
                     scope,
@@ -99,6 +104,7 @@ class LifeStore:
                     json.dumps(experience.get("cues", []), ensure_ascii=False),
                     experience.get("feeling", ""),
                     job.get("captured", now),
+                    kind,
                 ),
             )
         character = result.get("character", {})
@@ -178,18 +184,18 @@ class LifeStore:
             row["disputed"] = len({p["status"] for p in row["perspectives"]}) > 1
         return relations
 
-    def next_intention(self, scope, now):
+    def next_intention(self, scope, now, allow_questions=True):
         if self.db.execute("SELECT 1 FROM intentions WHERE scope=? AND status='sent'", (scope,)).fetchone():
             return None
-        row = self.db.execute(
+        rows = self.db.execute(
             "SELECT * FROM intentions WHERE scope=? AND status='pending' AND not_before<=? "
-            "ORDER BY updated DESC,id DESC LIMIT 1",
+            + ("" if allow_questions else "AND kind!='ask' ")
+            + "ORDER BY updated DESC,id DESC LIMIT 3",
             (scope, now),
-        ).fetchone()
-        if row:
-            item = dict(row)
-            item.update(intent_id=item["id"], question=item["thought"])
-            return item
+        ).fetchall()
+        choices = [dict(row, intent_id=row["id"], question=row["thought"]) for row in rows]
+        if choices:
+            return dict(choices[0], candidates=choices)
         return None
 
     def mark_intention(self, scope, intent_id, message, now):

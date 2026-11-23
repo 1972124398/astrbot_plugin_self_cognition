@@ -78,6 +78,9 @@ class Memory:
         relations = relevant_relations(view.get("relations", []), view.get("entities", []), effective, actor)
         intentions = [dict(i) for i in view.get("intentions", []) if not actor or i["actor"] == actor]
         questions = [dict(q) for q in view.get("all_questions", []) if q["actor"] == actor][:2]
+        portrait = dict(view.get("portraits", {}).get(actor, {}))
+        character = copy.deepcopy(view.get("character", {}))
+        self_story = dict(view.get("portraits", {}).get("self", {}))
         if conversation:
             # Remembering nothing is useful: ordinary greetings need no old stories.
             events = [event for event in events if terms & event.get("_terms", set())]
@@ -94,17 +97,30 @@ class Memory:
             ]
             intentions = [i for i in intentions if terms & recall_terms(i["topic"] + " " + i["thought"])]
             questions = [q for q in questions if terms & recall_terms(q["question"])]
+            # Familiarity can stay in the background; old stories need a reason to surface.
+            for key in ("shared_story", "unfinished", "last_outreach"):
+                if not terms & recall_terms(portrait.get(key, "")):
+                    portrait.pop(key, None)
+            for key in ("impression", "style"):
+                if portrait.get(key):
+                    portrait[key] = portrait[key][:180]
+            for key in ("preferences", "interests"):
+                character[key] = [item for item in character.get(key, []) if terms & recall_terms(item)]
+            if not terms & recall_terms(character.get("outlook", "")):
+                character.pop("outlook", None)
+            if not terms & recall_terms(self_story.get("impression", "")):
+                self_story = {}
         return {
             "memories": [{k: v for k, v in row.items() if k != "_terms"} for row in rows],
             "entities": copy.deepcopy(view.get("entities", [])),
             "relations": copy.deepcopy(relations),
             "feeling": next((dict(e) for e in view.get("entities", []) if e["id"] == actor), {}),
-            "portrait": dict(view.get("portraits", {}).get(actor, {})),
+            "portrait": portrait,
             "relation_focus": any(
                 e["id"] != "self" and e["name"] and e["name"] in query for e in view.get("entities", [])
             ),
-            "self_story": dict(view.get("portraits", {}).get("self", {})),
-            "character": copy.deepcopy(view.get("character", {})),
+            "self_story": self_story,
+            "character": character,
             "experiences": [{k: v for k, v in event.items() if k != "_terms"} for event in events],
             "intentions": intentions,
             "curiosity": [] if intentions else questions,

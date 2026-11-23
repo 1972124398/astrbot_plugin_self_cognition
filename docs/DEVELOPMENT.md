@@ -81,3 +81,11 @@ node --check astrbot_plugin_self_cognition/views/cognition/app.js
 `Memory.recall(..., conversation=True)` 仅用于真人请求：推进最近话题，并允许无关记忆、经历、关系和念头不召回。后台回顾、面板检索、主动联系与配套插件调用默认不更新话题线索。前台渲染优先使用一个挂念来源，不把同一个问题同时以 unfinished、curiosity、intention 重复呈现；旧数据格式继续兼容。
 
 这轮测试验证人格 prompt 原样传递、无变化输出、相关回忆选择和话题隔离，不把模型替身测试当作实际人格表达效果的证明。
+
+## 适时回忆与主动表达（0.6.0）
+
+前台进一步按话题筛选 portrait.shared_story/unfinished/last_outreach、character.preferences/interests/outlook 和 self_story；日常只常驻最多180字符的相处印象及表达方式。数据库里的完整认识不因此删除，后台仍可综合使用。
+
+experiences 增加 source_kind，保存时根据完整场景有无自己回复区分 dialogue/observed，配套活动保留 companion，旧记录用 legacy。前台据此呈现相处片段、听别人聊过或自己的活动；事实回忆不再给 updated 附上事件日期。明确发生时间由模型保留在自然内容里。
+
+现有 initiative 查询保留兼容接口，并在返回值附带最多三条到时的候选。同一次模型请求返回 choice/message 或 WAIT，发送后只更新被选条目。单候选仍兼容纯文本结果。关闭 curiosity_enabled 会过滤 ask 和旧问题，分享等其他意图仍可主动表达；不新增调度器或配置项。

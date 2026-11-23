@@ -203,7 +203,7 @@ class Hooks(unittest.IsolatedAsyncioTestCase):
             _, request = await self.prepare(event)
             hint = request.extra_user_content_parts[0].text
         self.assertIn("熟悉以后能放松地开玩笑", hint)
-        self.assertIn("我也有想安静陪着的时候", hint)
+        self.assertNotIn("我也有想安静陪着的时候", hint)
         self.assertNotIn('"affection"', hint)
         self.assertNotIn('"confidence"', hint)
         self.assertNotIn("真诚感谢", hint)  # The raw ledger is not part of ordinary chat.

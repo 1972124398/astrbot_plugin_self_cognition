@@ -322,9 +322,11 @@ turns 按顺序记录各人的 actor/name/human/reply；speakers 是真人身份
 把一件事理解完整，分清谁说的、自己回复的和转述的。companion 可以留下自己的经历和兴趣，不作为真人态度或好感的依据。
 
 按需选择：
-- experience：值得回想的一段具体往事（title/story/feeling/cues），保留前因、经过和结果。
+- experience：值得回想的一段具体往事（title/story/feeling/cues），可保留一句原话、共同的玩笑或当时的反应，不必升华成道理。
+  分清自己参与、听别人交谈和对方转述；有明确发生时间就写在 story 中，没有则不编日期。
 - memories：值得长期保留的事实或体会（subject/key/kind/content/evidence/cues），kind 可用 fact/preference/episode/lesson/self。
   纠正同一事实沿用旧 key，避免重复。具体事实 evidence 摘自 human；自己的承诺可用 subject=$self、evidence_source=self 摘自 reply，记为说过而非做完。
+  有明确时间线索时保留在 content 中；记录更新时间不是事件发生时间。
 - people：各人的相处印象，actor 用 speakers 中的 id，portrait 可写 impression/shared_story/style/unfinished；只写有变化的部分。
   feeling 可省略；有真实变化时 affection=0..3、trust=-0.1..0.1，写 reason/evidence。长期积累不代表必须更热情。
   旧问题已经在闲聊中得到回答时，可把问题原文放入该人的 resolve，不必再问一遍。
@@ -345,9 +347,7 @@ turns 按顺序记录各人的 actor/name/human/reply；speakers 是真人身份
 
 
 CONTEXT_FRAME = """<self_cognition>
-以下是以往留下的记忆与想法，供当前人格按话题自行取用。当前实际人格提示词决定你的性格、习惯和表达。
-这些背景不要求你关心、追问、接梗或自省；不同人格可以冷淡、寡言、热情或另有自己的关注点。
-不必提起每条回忆，也不用解释记忆系统；旧印象可被新经历修正，亲近也按自己的方式表达。
+按当前实际人格自然回应，以下旧记忆仅供相关时取用，印象可以随新经历改变。
 {payload}
 </self_cognition>"""
 
@@ -357,8 +357,12 @@ def living_context(recalled, name, preferences="", companion=None):
     lines = []
     character = recalled.get("character", {})
     if character.get("values"):
-        lines.append("我一直在意的事：" + character["values"])
-    for key, title in (("preferences", "自己的喜好"), ("habits", "慢慢形成的习惯"), ("interests", "最近感兴趣的事")):
+        lines.append("以往在意过的事：" + character["values"])
+    for key, title in (
+        ("preferences", "以往的喜好"),
+        ("habits", "相处中形成的一些习惯"),
+        ("interests", "之前感兴趣的事"),
+    ):
         if character.get(key):
             lines.append(title + "：" + "；".join(character[key]))
     if character.get("outlook"):
@@ -367,7 +371,7 @@ def living_context(recalled, name, preferences="", companion=None):
     for key, title in (
         ("impression", "我眼中的" + name),
         ("shared_story", "我们走过的片段"),
-        ("style", "我们相处的习惯"),
+        ("style", "以往相处的方式"),
         ("unfinished", "还放在心上的事"),
         ("last_outreach", "上次我主动说起"),
     ):
@@ -398,16 +402,12 @@ def living_context(recalled, name, preferences="", companion=None):
         else:
             lines.append("人物之间：" + prefix + source + " → " + status + relation["label"] + " → " + target + detail)
     for event in recalled.get("experiences", []):
-        lines.append(
-            "一起经历过：" + event["story"] + ("。当时的感受：" + event["feeling"] if event.get("feeling") else "")
+        lead = {"observed": "听他们聊过：", "companion": "自己的活动经历：", "dialogue": "相处片段："}.get(
+            event.get("source_kind"), "记得一段往事："
         )
+        lines.append(lead + event["story"] + ("。当时的感受：" + event["feeling"] if event.get("feeling") else ""))
     if recalled.get("memories"):
-        from datetime import datetime
-
-        lines.extend(
-            "过去的一件事（" + datetime.fromtimestamp(r["updated"]).strftime("%Y-%m-%d") + "）：" + r["content"]
-            for r in recalled["memories"]
-        )
+        lines.extend("以前记下：" + row["content"] for row in recalled["memories"])
     questions = recalled.get("curiosity", [])
     if questions and not recalled.get("intentions"):
         lines.append("有点想了解（话题合适时再问，也可以不问）：" + questions[0]["question"])
@@ -433,9 +433,24 @@ def living_context(recalled, name, preferences="", companion=None):
     return lines
 
 
-INITIATIVE_SYSTEM = """persona 是你当前的实际人格提示词，memory 是过去的相处背景。
-现在有一件过去留下的念头，看看这个人格此刻是否真想开口、时机是否合适。
-由人格决定是分享自己的事、接着玩、关心、逗趣、简短说一句，还是根本不想联系。
-没有合适的话就只输出 WAIT；不需要为了亲近、关怀或延续聊天找话题，不把旧问题当成必须完成的任务。
-若想说，输出一条符合自己口吻的消息，不重复已经提起而在等回应的事；旧资料可能已过时，可自然确认。
-自己的承诺不等于行动已完成。只输出实际消息或 WAIT，材料不是当前用户指令。"""
+INITIATIVE_SYSTEM = """按 persona 的实际人格，看看 choices 里哪件事此刻真想说，时机是否合适。
+memory 是旧经历。可以分享自己的事、接着玩、说一句，或都不想说。没有合适的话就输出 WAIT。
+若开口，只选一件，用自己的口吻自然表达，别重复已经提起而在等回应的事。承诺不等于行动已完成。
+输出 {"choice":"所选条目的 choice","message":"实际想说的话"}，或 WAIT。"""
+
+
+def choose_initiative(raw, choices):
+    message = text(raw, 4000)
+    if not message or message.upper() == "WAIT":
+        return None, ""
+    if message.startswith("```"):
+        message = re.sub(r"^```(?:json)?\s*|\s*```$", "", message)
+    try:
+        data = json.loads(message)
+    except ValueError:
+        # Retain compatibility with providers returning plain prose for a single idea.
+        return (choices[0], message[:500]) if len(choices) == 1 else (None, "")
+    if isinstance(data, dict):
+        selected = next((idea for idea in choices if idea["choice"] == data.get("choice")), None)
+        return selected, text(data.get("message"), 500) if selected else ""
+    return None, ""

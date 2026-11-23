@@ -23,6 +23,7 @@ from .cognition import (
     REFLECT_SYSTEM,
     INITIATIVE_SYSTEM,
     living_context,
+    choose_initiative,
     actor_key,
     conversation_key,
     digest,
@@ -317,6 +318,7 @@ class SelfCognition(Star):
         event.set_extra(TURN, job)
         if not self.config.get("curiosity_enabled", True):
             recalled["curiosity"] = []
+            recalled["intentions"] = [idea for idea in recalled["intentions"] if idea["kind"] != "ask"]
         lines = living_context(recalled, name, self.expression_preferences(), self.companions.get(origin))
         budget = int(self.n("context_char_limit", 4500, 1000, 30000))
         while lines and len("\n".join(lines)) > budget:
@@ -495,6 +497,7 @@ class SelfCognition(Star):
         )
         if not self.config.get("curiosity_enabled", True):
             result["curiosity"] = []
+            result["intentions"] = [idea for idea in result.get("intentions", []) if idea["kind"] != "ask"]
             for person in result.get("people", []):
                 person["curiosity"] = []
         applied = await self.memory.call(self.store.apply, job, result)
@@ -556,7 +559,6 @@ class SelfCognition(Star):
             not self.allowed(origin)
             or state["paused"]
             or state["no_contact"]
-            or not self.config.get("curiosity_enabled", True)
             or not self.config.get("proactive_enabled", False)
             or origin not in self.config.get("proactive_origins", [])
             or self.in_quiet_hours()
@@ -572,9 +574,15 @@ class SelfCognition(Star):
             return
         if now - state["last_human"] > self.n("proactive_max_idle_days", 7, 1, 365) * 86400:
             return
-        question = await self.memory.call(self.store.initiative, state["id"], now)
+        question = await self.memory.call(
+            self.store.initiative, state["id"], now, self.config.get("curiosity_enabled", True)
+        )
         if not question:
             return
+        choices = [
+            dict(idea, choice=("intention:" if idea.get("intent_id") else "question:") + str(idea["id"]))
+            for idea in question.get("candidates", [question])
+        ]
         # A shared group cannot identify the intended person without a platform mention.
         if ":GroupMessage:" in origin:
             return
@@ -591,7 +599,13 @@ class SelfCognition(Star):
             provider = text(
                 self.config.get("analysis_provider_id"), 200
             ) or await self.context.get_current_chat_provider_id(origin)
-            recalled = self.memory.recall(state["id"], question["actor"], question["question"], 5)
+            recalled = self.memory.recall(
+                state["id"], question["actor"], " ".join(idea["question"] for idea in choices), 5
+            )
+            recalled["intentions"] = [idea for idea in recalled["intentions"] if idea["status"] != "pending"]
+            if not self.config.get("curiosity_enabled", True):
+                recalled["curiosity"] = []
+                recalled["intentions"] = [idea for idea in recalled["intentions"] if idea["kind"] != "ask"]
             async with asyncio.timeout(self.n("analysis_timeout_seconds", 60, 5, 180)):
                 self.initiative_task = asyncio.create_task(
                     self.context.llm_generate(
@@ -601,8 +615,7 @@ class SelfCognition(Star):
                             {
                                 "persona": state.get("persona_prompt", ""),
                                 "memory": recalled,
-                                "question": question["question"],
-                                "intention": question if question.get("intent_id") else {},
+                                "choices": choices,
                                 "now": datetime.now(
                                     ZoneInfo(str(self.config.get("timezone", "Asia/Shanghai")))
                                 ).isoformat(),
@@ -612,8 +625,8 @@ class SelfCognition(Star):
                     )
                 )
                 reply = await self.initiative_task
-            message = text(reply.completion_text, 500)
-            if not message or message.strip().upper() == "WAIT":
+            question, message = choose_initiative(reply.completion_text, choices)
+            if not question or not message or message.strip().upper() == "WAIT":
                 self.initiative_wait[state["id"]] = now + 3600
                 return
             current = await self.memory.call(self.store.scope, state["id"])
