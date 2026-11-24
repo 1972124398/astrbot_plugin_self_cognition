@@ -70,6 +70,9 @@ class Store(LifeStore):
           human TEXT NOT NULL, reply TEXT NOT NULL, created REAL NOT NULL);
         CREATE TABLE IF NOT EXISTS snapshot_receipts(
           scope TEXT NOT NULL, id TEXT NOT NULL, PRIMARY KEY(scope,id));
+        CREATE TABLE IF NOT EXISTS daily_memory(
+          scope TEXT NOT NULL, actor TEXT NOT NULL, payload TEXT NOT NULL,
+          PRIMARY KEY(scope,actor));
         CREATE TABLE IF NOT EXISTS portraits(
           scope TEXT NOT NULL, actor TEXT NOT NULL, content TEXT NOT NULL,
           updated REAL NOT NULL, PRIMARY KEY(scope,actor));
@@ -106,6 +109,25 @@ class Store(LifeStore):
             self.db.execute("INSERT OR IGNORE INTO scopes(id,origin,persona) VALUES(?,?,?)", (scope, origin, persona))
             self.db.execute("UPDATE scopes SET origin=? WHERE id=?", (origin, scope))
         return self.scope(scope)
+
+    def replace_daily(self, scope, actor, payload, generation):
+        state = self.scope(scope)
+        if not state or state["paused"] or state["generation"] != generation:
+            return False
+        payload = {**payload, "source_revision": digest(payload), "records": [r for r in payload.get("records", [])
+                   if not self.db.execute("SELECT 1 FROM snapshot_receipts WHERE scope=? AND id=?",
+                                         (scope, "daily:" + actor + ":" + digest(r))).fetchone()]}
+        with self.db:
+            self.db.execute("INSERT INTO daily_memory VALUES(?,?,?) ON CONFLICT(scope,actor) DO UPDATE SET payload=excluded.payload",
+                            (scope, actor, json.dumps(payload, ensure_ascii=False)))
+        return True
+
+    def forget_daily(self, scope):
+        for row in self.db.execute("SELECT actor,payload FROM daily_memory WHERE scope=?", (scope,)):
+            for record in json.loads(row["payload"]).get("records", []):
+                self.db.execute("INSERT OR IGNORE INTO snapshot_receipts VALUES(?,?)",
+                                (scope, "daily:" + row["actor"] + ":" + digest(record)))
+        self.db.execute("DELETE FROM daily_memory WHERE scope=?", (scope,))
 
     def scope(self, scope):
         row = self.db.execute("SELECT * FROM scopes WHERE id=?", (scope,)).fetchone()
@@ -441,6 +463,7 @@ class Store(LifeStore):
             for r in self.db.execute("SELECT * FROM portraits WHERE scope=?", (scope,))
         }
         data.update(self.life_view(scope))
+        data["daily_memory"] = {r["actor"]: json.loads(r["payload"]) for r in self.db.execute("SELECT * FROM daily_memory WHERE scope=?", (scope,))}
         return self.scope(scope), Memory.index(data)
 
     def dashboard(self, scope, query=""):
@@ -568,6 +591,7 @@ class Store(LifeStore):
 
     def clear(self, scope):
         with self.db:
+            self.forget_daily(scope)
             self.remember_snapshot_receipts(scope)
             for table in (
                 "memories",

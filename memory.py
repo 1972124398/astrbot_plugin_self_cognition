@@ -8,6 +8,7 @@ import time
 import json
 
 from .cognition import retrieve, tokens, relevant_relations
+from .daily_memory import linked_rows
 
 
 class Memory:
@@ -17,6 +18,8 @@ class Memory:
         self.states = {}
         self.views = {}
         self.focus = {}
+        self.daily_enabled = lambda scope: True
+        self.daily_context_enabled = lambda scope: True
 
     async def call(self, function, *args, **kwargs):
         async with self.lock:
@@ -72,7 +75,13 @@ class Memory:
         if query and conversation:
             self.focus[scope, actor] = (effective[-600:], time.monotonic())
         terms = recall_terms(effective)
-        candidates = view.get("memories", [])
+        candidates = list(view.get("memories", []))
+        if self.daily_enabled(scope) and (not conversation or self.daily_context_enabled(scope)):
+            native_text = {row["content"] for row in candidates}
+            for row in linked_rows(view.get("daily_memory", {}), actor, effective, time.time(), conversation):
+                if row["content"] not in native_text:
+                    row["_terms"] = tokens(row["content"])
+                    candidates.append(row)
         if conversation:
             candidates = [row for row in candidates if terms & row.get("_terms", set())]
         rows = retrieve(candidates, effective, actor, limit)

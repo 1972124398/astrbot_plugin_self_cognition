@@ -1,5 +1,7 @@
 # 开发说明
 
+日常调查双向记忆接口：`companion_memory(origin, persona=..., actor=...)` 仅导出缓存内、对应人物的原生 fact/preference；导入日常使用独立 SQLite `daily_memory` 表。后台同步不调用模型、不记真人活动或好感。`Memory.recall` 在相关时使用导入资料，前台开关通过当前来源配置即时判断。清空时把每条导入记录的指纹写入现有 snapshot_receipts，避免其他记录变化导致旧内容复活。跨仓库真实类的验证位于日常调查的 `tests/test_mutual_memory.py`。
+
 ## 组成
 
 | 文件 | 责任 |

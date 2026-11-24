@@ -71,6 +71,11 @@ class SelfCognition(Star):
         self.closing = False
         self.worker = self.scheduler = self.writer = self.analysis_task = None
         self.memory = Memory(self.store)
+        self.memory.daily_enabled = lambda scope: bool(
+            self.link.peer("daily_routine", self.memory.states.get(scope, {}).get("origin", "")))
+        self.memory.daily_context_enabled = lambda scope: bool(
+            (peer := self.link.peer("daily_routine", self.memory.states.get(scope, {}).get("origin", "")))
+            and peer.config.get("context_enabled", True))
         self.capture_queue = asyncio.Queue()
         self.frontend = {}
         self.initiative_task = None
@@ -339,6 +344,8 @@ class SelfCognition(Star):
             recalled["curiosity"] = []
             recalled["intentions"] = [idea for idea in recalled["intentions"] if idea["kind"] != "ask"]
         lines = living_context(recalled, name, self.expression_preferences(), self.companions.get(origin))
+        existing_text = "\n".join(str(getattr(p, "text", "")) for p in (request.extra_user_content_parts or []))
+        lines = [line for line in lines if not (line.startswith("以前记下：") and line[5:] in existing_text)]
         budget = int(self.n("context_char_limit", 4500, 1000, 30000))
         while lines and len("\n".join(lines)) > budget:
             lines.pop()
@@ -722,6 +729,7 @@ class SelfCognition(Star):
                 await self.memory.call(self.store.prune, int(self.n("raw_retention_days", 30, 0, 3650)), now)
                 for state in list(self.memory.states.values()):
                     if self.allowed(state["origin"]) and not state["paused"]:
+                        await self.sync_daily_memory(state)
                         snapshots = self.link.snapshots(state["origin"])
                         self.companions[state["origin"]] = snapshots
                         self.observe_snapshots(state, snapshots)
@@ -731,6 +739,43 @@ class SelfCognition(Star):
             except Exception as error:
                 logger.warning("Self-cognition scheduler unavailable (%s)", type(error).__name__)
             await asyncio.sleep(15)
+
+    async def sync_daily_memory(self, state):
+        peer = self.link.peer("daily_routine", state["origin"])
+        read = getattr(peer, "companion_memory", None)
+        if not read:
+            return
+        view = self.memory.views.get(state["id"], {})
+        for entity in view.get("entities", []):
+            if entity.get("kind") != "user":
+                continue
+            actor = entity["id"]
+            try:
+                data = read(state["origin"], persona=state["persona"], actor=actor)
+            except Exception:
+                continue
+            if not isinstance(data, dict) or data.get("version") != 1:
+                continue
+            if (data.get("persona") != state["persona"] or data.get("actor") != actor
+                    or data.get("origin") != conversation_key(state["origin"])):
+                continue
+            if view.get("daily_memory", {}).get(actor, {}).get("source_revision") == digest(data):
+                continue
+            if await self.memory.call(self.store.replace_daily, state["id"], actor, data, state["generation"]):
+                await self.memory.refresh(state["id"])
+
+    def companion_memory(self, origin, *, persona, actor):
+        if not self.allowed(origin) or not self.link.peer("daily_routine", origin):
+            return {}
+        scopes = [s for s in self.memory.states.values() if conversation_key(s["origin"]) == conversation_key(origin)
+                  and s["persona"] == persona and not s["paused"]]
+        if len(scopes) != 1:
+            return {}
+        view = self.memory.views.get(scopes[0]["id"], {})
+        records = [{"key": str(r["id"]), "text": r["content"], "evidence": r["evidence"], "updated": r["updated"]}
+                   for r in view.get("memories", []) if r["subject"] == actor and r["kind"] in {"fact", "preference"}]
+        return {"version": 1, "origin": conversation_key(origin), "persona": persona, "actor": actor,
+                "records": records}
 
     def companion_snapshot(self, origin="", persona=None):
         # No origin means no cross-conversation memory dump. New peers can opt in.
