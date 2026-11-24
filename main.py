@@ -424,7 +424,7 @@ class SelfCognition(Star):
     def companion_observe(self, packet):
         source, origin, kind = packet.get("source"), packet.get("origin", ""), packet.get("kind")
         if (
-            source not in {"play_together", "self_amusement", "codex_bridge"}
+            source not in {"play_together", "self_amusement", "codex_bridge", "daily_routine"}
             or not self.allowed(origin)
             or not self.config.get("interop_enabled", True)
             or not self.config.get("link_" + source, True)
@@ -600,6 +600,9 @@ class SelfCognition(Star):
         ):
             return
         now = time.time()
+        routine = self.link.peer("daily_routine", origin)
+        if routine and not routine.companion_allow_initiative(origin, "self_cognition"):
+            return
         if self.initiative_wait.get(state["id"], 0) > now:
             return
         if (
@@ -729,7 +732,7 @@ class SelfCognition(Star):
                 logger.warning("Self-cognition scheduler unavailable (%s)", type(error).__name__)
             await asyncio.sleep(15)
 
-    def companion_snapshot(self, origin=""):
+    def companion_snapshot(self, origin="", persona=None):
         # No origin means no cross-conversation memory dump. New peers can opt in.
         if not origin or not self.allowed(origin) or not self.config.get("interop_enabled", True):
             return {}
@@ -737,6 +740,7 @@ class SelfCognition(Star):
             s
             for s in self.memory.states.values()
             if conversation_key(s["origin"]) == conversation_key(origin) and not s["paused"]
+            and (persona is None or s["persona"] == persona)
         ]
         if len(scopes) != 1:
             return {}  # Ambiguous persona: do not mix identities for old protocol callers.

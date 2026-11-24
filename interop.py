@@ -10,7 +10,7 @@ import copy
 import time
 import uuid
 
-ROLES = ("short_term_mood", "play_together", "self_amusement", "codex_bridge")
+ROLES = ("short_term_mood", "play_together", "self_amusement", "codex_bridge", "daily_routine")
 
 
 class CompanionLink:
@@ -41,6 +41,7 @@ class CompanionLink:
                 or getattr(peer, "closing", False)
                 or not config.get("enabled", True)
                 or not config.get("interop_enabled", True)
+                or not config.get("link_self_cognition", True)
             ):
                 return None
             if origin:
