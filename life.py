@@ -183,16 +183,18 @@ class LifeStore:
         return relations
 
     def next_intention(self, scope, now, allow_questions=True, considered=()):
-        if self.db.execute("SELECT 1 FROM intentions WHERE scope=? AND status='sent'", (scope,)).fetchone():
+        if self.db.execute("SELECT 1 FROM intentions WHERE scope=? AND status='sent' AND updated>=?",
+                           (scope, now - 30 * 86400)).fetchone():
             return None
         order = "id IN (" + ",".join("?" for _ in considered) + ")," if considered else ""
         rows = self.db.execute(
             "SELECT * FROM intentions WHERE scope=? AND status='pending' AND not_before<=? "
+            "AND max(updated,not_before)>=? "
             + ("" if allow_questions else "AND kind!='ask' ")
             + "ORDER BY "
             + order
             + "updated DESC,id DESC LIMIT 3",
-            (scope, now, *considered),
+            (scope, now, now - 30 * 86400, *considered),
         ).fetchall()
         choices = [dict(row, intent_id=row["id"], question=row["thought"]) for row in rows]
         if choices:

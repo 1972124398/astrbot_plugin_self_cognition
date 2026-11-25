@@ -11,6 +11,12 @@ from .cognition import retrieve, tokens, relevant_relations
 from .daily_memory import linked_rows
 
 
+def current_thought(item, now):
+    # Reuse the existing 30-day curiosity window. A dated future intention
+    # starts aging when it becomes due, rather than when it was first written.
+    return max(item.get("updated", item.get("created", now)), item.get("not_before", 0)) >= now - 30 * 86400
+
+
 class Memory:
     def __init__(self, store):
         self.store = store
@@ -58,24 +64,31 @@ class Memory:
 
     def recall(self, scope, actor="", query="", limit=8, *, conversation=False):
         view = self.views.get(scope, {})
+        now = time.time()
         previous = self.focus.get((scope, actor)) if conversation else None
-        if conversation and any(
+        changed_topic = conversation and any(
             phrase in query.casefold()
             for phrase in ("换个话题", "不聊这个", "不说这个", "聊点别的", "change the subject", "new topic")
-        ):
+        )
+        if changed_topic:
             previous = None
             self.focus.pop((scope, actor), None)
         effective = query
         if (
             previous
-            and time.monotonic() - previous[1] < 1800
+            and time.monotonic() - previous[1] < 600
             and any(word in query for word in ("他", "她", "那个", "这件", "后来", "继续", "上次", "怎么样"))
         ):
             effective += " " + previous[0]
-        if query and conversation:
-            self.focus[scope, actor] = (effective[-600:], time.monotonic())
+        if query and conversation and effective == query:
+            # A follow-up can borrow the anchor, but cannot grow it or renew its
+            # lifetime indefinitely just by saying "后来呢" again.
+            self.focus[scope, actor] = (query[-600:], time.monotonic())
         terms = recall_terms(effective)
         candidates = list(view.get("memories", []))
+        if conversation or not query:
+            candidates = [r for r in candidates
+                          if r.get("importance", 0.5) >= 0.5 or now - r.get("updated", now) <= 7 * 86400]
         if self.daily_enabled(scope) and (not conversation or self.daily_context_enabled(scope)):
             native_text = {row["content"] for row in candidates}
             for row in linked_rows(view.get("daily_memory", {}), actor, effective, time.time(), conversation):
@@ -90,7 +103,7 @@ class Memory:
                 (
                     row
                     for row in view.get("memories", [])
-                    if row["subject"] == actor and row.get("kind") == "preference"
+                    if row["subject"] == actor and row.get("kind") == "preference" and row.get("importance", 0.5) >= 0.5
                 ),
                 key=lambda row: (row["importance"], row["updated"]),
                 reverse=True,
@@ -105,8 +118,10 @@ class Memory:
             reverse=True,
         )[:2]
         relations = relevant_relations(view.get("relations", []), view.get("entities", []), effective, actor)
-        intentions = [dict(i) for i in view.get("intentions", []) if not actor or i["actor"] == actor]
-        questions = [dict(q) for q in view.get("all_questions", []) if q["actor"] == actor][:2]
+        intentions = [dict(i) for i in view.get("intentions", [])
+                      if (not actor or i["actor"] == actor) and current_thought(i, now)]
+        questions = [dict(q) for q in view.get("all_questions", [])
+                     if q["actor"] == actor and current_thought(q, now)][:2]
         portrait = dict(view.get("portraits", {}).get(actor, {}))
         character = copy.deepcopy(view.get("character", {}))
         own_interest = character.get("interests", [])[:1]
@@ -136,12 +151,20 @@ class Memory:
                     portrait[key] = portrait[key][:180]
             for key in ("preferences", "interests"):
                 character[key] = [item for item in character.get(key, []) if terms & recall_terms(item)]
-            if not character.get("interests") and own_interest:
+            if not character.get("interests") and own_interest and not changed_topic:
                 # One brief interest is part of being oneself, not a story to retell.
                 character["interests"] = [own_interest[0][:120]]
             if not terms & recall_terms(character.get("outlook", "")):
                 character.pop("outlook", None)
             if not terms & recall_terms(self_story.get("impression", "")):
+                self_story = {}
+            if changed_topic:
+                rows, events, relations, intentions, questions = [], [], [], [], []
+                for key in ("shared_story", "unfinished", "last_outreach"):
+                    portrait.pop(key, None)
+                character["interests"] = []
+                character["preferences"] = []
+                character.pop("outlook", None)
                 self_story = {}
         return {
             "memories": [{k: v for k, v in row.items() if k != "_terms"} for row in rows],

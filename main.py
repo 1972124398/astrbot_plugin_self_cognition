@@ -36,6 +36,7 @@ from .cognition import (
 from .interop import CompanionLink
 from .store import Store
 from .memory import Memory
+from .history import HistoryCompactor
 
 NAME = "astrbot_plugin_self_cognition"
 TURN = NAME + ".turn"
@@ -71,6 +72,7 @@ class SelfCognition(Star):
         self.closing = False
         self.worker = self.scheduler = self.writer = self.analysis_task = None
         self.memory = Memory(self.store)
+        self.history = HistoryCompactor(self)
         self.memory.daily_enabled = lambda scope: bool(
             self.link.peer("daily_routine", self.memory.states.get(scope, {}).get("origin", "")))
         self.memory.daily_context_enabled = lambda scope: bool(
@@ -173,6 +175,12 @@ class SelfCognition(Star):
             "自然记住共同经历，有自己的偏好和边界；相关时回忆，关心时再问，不把聊天变成盘问。",
         }
         return "" if value in old_defaults else value
+
+    def memory_companions(self, origin):
+        # The mood plugin injects its live state itself. Its polled snapshot is
+        # stale by definition and must not become a second mood or a lasting trait.
+        return {role: value for role, value in self.companions.get(origin, {}).items()
+                if role != "short_term_mood" and self.link.peer(role, origin) is not None}
 
     async def initialize(self):
         await self.memory.load()
@@ -286,6 +294,19 @@ class SelfCognition(Star):
         origin = str(event.unified_msg_origin)
         if not self.allowed(origin) or event.get_extra("self_cognition_skip"):
             return
+        # Internal reports share the same real conversation history. They still
+        # need cleanup, but must never enter the human cognition pipeline.
+        if not event.get_extra(NAME + ".history_prepared"):
+            event.set_extra(NAME + ".history_prepared", True)
+            scope, _, _, state = self.identity(event, create=False)
+            if not state or not state["paused"]:
+                try:
+                    await self.history.prepare(event, request, scope, state)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as error:
+                    logger.warning("Self-cognition history cleanup deferred (%s); original history retained",
+                                   type(error).__name__)
         # Task reports and autonomous messages are not new human experiences.
         if event_kind(event) != "dialogue":
             return
@@ -343,7 +364,7 @@ class SelfCognition(Star):
         if not self.config.get("curiosity_enabled", True):
             recalled["curiosity"] = []
             recalled["intentions"] = [idea for idea in recalled["intentions"] if idea["kind"] != "ask"]
-        lines = living_context(recalled, name, self.expression_preferences(), self.companions.get(origin))
+        lines = living_context(recalled, name, self.expression_preferences(), self.memory_companions(origin))
         existing_text = "\n".join(str(getattr(p, "text", "")) for p in (request.extra_user_content_parts or []))
         lines = [line for line in lines if not (line.startswith("以前记下：") and line[5:] in existing_text)]
         budget = int(self.n("context_char_limit", 4500, 1000, 30000))
@@ -431,7 +452,7 @@ class SelfCognition(Star):
     def companion_observe(self, packet):
         source, origin, kind = packet.get("source"), packet.get("origin", ""), packet.get("kind")
         if (
-            source not in {"play_together", "self_amusement", "codex_bridge", "daily_routine"}
+            source not in {"play_together", "self_amusement", "daily_routine"}
             or not self.allowed(origin)
             or not self.config.get("interop_enabled", True)
             or not self.config.get("link_" + source, True)
@@ -512,7 +533,7 @@ class SelfCognition(Star):
             for speaker in payload["speakers"]
         }
         payload["now"] = datetime.now(ZoneInfo(str(self.config.get("timezone", "Asia/Shanghai")))).isoformat()
-        payload["companion"] = self.companions.get(job["origin"], {})
+        payload["companion"] = self.memory_companions(job["origin"])
         if catalog := self.link.sticker_catalog(job["origin"]):
             payload["sticker_library"] = {
                 "count": len(catalog["items"]),
@@ -802,24 +823,23 @@ class SelfCognition(Star):
             key: (value[:300] if isinstance(value, str) else value[:3]) for key, value in recalled["character"].items()
         }
         return {
-            "guidance": "这是持续积累的共同经历与长期相处认识；当前心情、是否想独处等即时状态仍以各插件当前状态补充。",
+            "guidance": "这是长期相处背景，相关时才取用，不需要找旧话题续聊；历史感受不代表当前心情，当前心境以短期情绪插件状态为准。",
             "character": character,
-            "recent_own_messages": [message[:500] for message in spoken] if scopes[0]["last_sent"] else [],
+            "recent_own_messages": [message[:500] for message in spoken]
+            if scopes[0]["last_sent"] and time.time() - scopes[0]["last_sent"] <= 86400 else [],
             "people": {
                 names.get(key, key): {field: value.get(field, "")[:300] for field in ("impression", "style")}
                 for key, value in list(portraits.items())[-5:]
                 if key != "self"
             },
-            "remembered": [row["content"][:300] for row in recalled["memories"]],
-            "experiences": [e["story"][:400] for e in recalled["experiences"]],
+            "remembered": [row["content"][:300] for row in recalled["memories"]
+                           if row["kind"] in {"fact", "preference", "lesson", "self"} and row["importance"] >= 0.5],
+            "experiences": [],  # No query: do not choose a past episode for another plugin's current chat.
             "self_reflection": recalled["self_story"].get("impression", "")[:400],
             "relationships": [line[5:][:350] for line in living_context(recalled, "") if line.startswith("人物之间：")][
                 :5
             ],
-            "open_threads": [
-                {"kind": i["kind"], "thought": i["thought"][:240], "occasion": i["occasion"], "status": i["status"]}
-                for i in recalled["intentions"][:3]
-            ],
+            "open_threads": [],  # Autonomous thoughts stay with this plugin's own initiative selection.
         }
 
     @filter.command("cognition", alias={"自主认知"})
@@ -1039,7 +1059,8 @@ class SelfCognition(Star):
         if ObservedGroup.owner and ObservedGroup.owner() is self:
             ObservedGroup.owner = None
         self.link.close()
-        tasks = [t for t in (self.worker, self.scheduler, self.analysis_task, self.initiative_task) if t is not None]
+        tasks = [t for t in (self.worker, self.scheduler, self.analysis_task, self.initiative_task,
+                            *self.history.tasks.values()) if t is not None]
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)

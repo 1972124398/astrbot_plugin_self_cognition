@@ -69,7 +69,48 @@
       "max": 3650,
       "step": 1
     },
-    "hint": "0 表示永久保留；提炼记忆及其证据、关系、好感账本永久保存。未完成的整理任务仍保留待处理文本。"
+    "hint": "同时控制原始片段和上下文压缩归档的保留时间。0 表示永久保留；提炼记忆及其证据、关系、好感账本永久保存。未完成的整理任务仍保留待处理文本。"
+  },
+  "history_cleanup_enabled": {
+    "description": "自动整理聊天历史上下文",
+    "type": "bool",
+    "default": true,
+    "hint": "在下一次请求模型前检查实际历史，超过时间或字符预算时先摘要再替换旧轮次；后台任务播报同样检查，但不算用户活动。失败保留原历史，5 分钟后允许重试。"
+  },
+  "history_idle_minutes": {
+    "description": "无人聊天多久整理上下文（分钟）",
+    "type": "int",
+    "default": 60,
+    "slider": {"min": 1, "max": 10080, "step": 1},
+    "hint": "下一次请求时，把空闲前的原始轮次压成摘要；后台通知不会延长真人活动时间。"
+  },
+  "history_max_age_minutes": {
+    "description": "原始轮次最长参与聊天时间（分钟）",
+    "type": "int",
+    "default": 240,
+    "slider": {"min": 1, "max": 43200, "step": 1},
+    "hint": "持续聊天也会淘汰超龄轮次。按消息指纹记录首次观察时间并持久化，旧安装历史以会话最后更新时间保守估算；不能还原历史中每条消息的真实发送时间。"
+  },
+  "history_char_limit": {
+    "description": "聊天历史字符预算",
+    "type": "int",
+    "default": 16000,
+    "slider": {"min": 2000, "max": 200000, "step": 1000},
+    "hint": "包含历史 JSON，作为 token 的近似预算，不含当前用户消息、系统提示词与工具定义。超过后优先保留最近完整轮次，必要时连最近的大轮次一起摘要；不会拆断工具调用。"
+  },
+  "history_recent_turns": {
+    "description": "超预算时优先保留最近几轮",
+    "type": "int",
+    "default": 4,
+    "slider": {"min": 0, "max": 30, "step": 1},
+    "hint": "仅用于长度压缩；过期或跨空闲期限的原文不受该设置保护。"
+  },
+  "history_summary_char_limit": {
+    "description": "历史摘要字符上限",
+    "type": "int",
+    "default": 1200,
+    "slider": {"min": 200, "max": 8000, "step": 100},
+    "hint": "保留稳定事实与用户明确委托的未完成事项；临时事项最多保留 24 小时。摘要使用后台认知整理模型，大历史分批合并，完成后下一次请求替换匹配的旧历史前缀，不让前台等待模型整理。"
   },
   "behavior_preferences": {
     "description": "补充表达偏好（可留空）",

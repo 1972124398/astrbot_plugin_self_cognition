@@ -50,7 +50,7 @@ class ConsiderationTests(unittest.IsolatedAsyncioTestCase):
             for index in range(4):
                 self.plugin.store.db.execute(
                     "INSERT INTO intentions(scope,actor,topic,kind,thought,occasion,updated) VALUES(?,?,?,?,?,?,?)",
-                    (scope, actor, "念头" + str(index), "share", "想说的话" + str(index), "闲下来时", 100 + index),
+                    (scope, actor, "念头" + str(index), "share", "想说的话" + str(index), "闲下来时", time.time() - 100 + index),
                 )
         await self.plugin.memory.refresh(scope)
         self.plugin.config.update(

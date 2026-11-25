@@ -149,6 +149,7 @@ def parse_reflection(raw, human, *, companion=False, known_entities=(), reply=""
         content = text(item.get("content"), 900)
         key = text(item.get("key"), 80) or digest(content)[:20]
         kind = item.get("kind", "fact")
+        importance = number(item.get("importance"), 0.5)
         subject = text(item.get("subject"), 80) or "$speaker"
         if subject == "$self" and item.get("evidence_source") == "self":
             quote = text(item.get("evidence"), 500)
@@ -173,7 +174,7 @@ def parse_reflection(raw, human, *, companion=False, known_entities=(), reply=""
                     if subject == "$self" and item.get("evidence_source") == "self"
                     else "human",
                     "confidence": number(item.get("confidence"), 0.6),
-                    "importance": number(item.get("importance"), 0.5),
+                    "importance": importance,
                     "cues": [text(cue, 80) for cue in item.get("cues", []) if isinstance(cue, str)][:12]
                     if isinstance(item.get("cues", []), list)
                     else [],
@@ -317,6 +318,10 @@ REFLECT_SYSTEM = """你在后台回想刚才发生的事。persona 是当前实�
 
 先读 turns 和 known，判断是否有真的值得留下的事。没有就输出 {}。只更新有变化的字段，主观印象可以自然概括，
 不要求每次产生经历、自省、兴趣或挂念。persona 未设定的部分可以按当下语境自然发挥，不必填满所有空白。
+记忆要有取舍：一次寒暄、随口提到的小事、临时位置、刚才的心情和机器人自己反复问的话，通常不用记。
+重要关系、稳定偏好、明确约定、有分量的共同经历才值得留下。memories 的 importance 为 0..1，低于 0.5 的新条目不入长期记忆。
+已有事实的纠正必须沿用原 key 输出，即使重要性降低也应替换旧事实，不能因为想淡忘而继续保留错误认识。
+旧记录出现在 known 中不代表它重要或仍未完成；不要为了延续旧话题重新写回未改变的认识，也不要把临时情绪升级成人格。
 
 turns 按顺序记录各人的 actor/name/human/reply；speakers 是真人身份。observed 是听别人交谈，companion 是插件活动。
 把一件事理解完整，分清谁说的、自己回复的和转述的。companion 可以留下自己的经历、兴趣和想继续分享或探索的念头，不作为真人态度或好感的依据。
@@ -355,6 +360,7 @@ sticker_library 是当前表情库目录，可用于理解聊天梗和表情表�
 
 CONTEXT_FRAME = """<self_cognition>
 按当前实际人格自然回应，以下记忆仅供相关时取用；具体已更新的事实优先于早先印象。
+记得不等于需要提起，眼前的话优先。往事里的情绪属于当时，当前心境以短期情绪插件本轮状态为准。
 {payload}
 </self_cognition>"""
 

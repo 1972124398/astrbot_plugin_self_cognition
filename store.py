@@ -76,6 +76,15 @@ class Store(LifeStore):
         CREATE TABLE IF NOT EXISTS portraits(
           scope TEXT NOT NULL, actor TEXT NOT NULL, content TEXT NOT NULL,
           updated REAL NOT NULL, PRIMARY KEY(scope,actor));
+        CREATE TABLE IF NOT EXISTS history_states(
+          scope TEXT NOT NULL, cid TEXT NOT NULL, payload TEXT NOT NULL,
+          updated REAL NOT NULL, PRIMARY KEY(scope,cid));
+        CREATE TABLE IF NOT EXISTS history_archives(
+          id INTEGER PRIMARY KEY, scope TEXT NOT NULL, cid TEXT NOT NULL,
+          original TEXT NOT NULL, replacement TEXT NOT NULL, created REAL NOT NULL);
+        CREATE TABLE IF NOT EXISTS history_summaries(
+          scope TEXT NOT NULL, cid TEXT NOT NULL, payload TEXT NOT NULL,
+          updated REAL NOT NULL, PRIMARY KEY(scope,cid));
         PRAGMA user_version=3;
         """)
         if "persona_prompt" not in {r[1] for r in self.db.execute("PRAGMA table_info(scopes)")}:
@@ -109,6 +118,43 @@ class Store(LifeStore):
             self.db.execute("INSERT OR IGNORE INTO scopes(id,origin,persona) VALUES(?,?,?)", (scope, origin, persona))
             self.db.execute("UPDATE scopes SET origin=? WHERE id=?", (origin, scope))
         return self.scope(scope)
+
+    def history_state(self, scope, cid):
+        row = self.db.execute("SELECT payload FROM history_states WHERE scope=? AND cid=?", (scope, cid)).fetchone()
+        return json.loads(row[0]) if row else {}
+
+    def save_history_state(self, scope, cid, timeline, human_at, now, pending_idle=False):
+        payload = json.dumps({"timeline": timeline, "human_at": human_at, "pending_idle": pending_idle})
+        with self.db:
+            self.db.execute(
+                "INSERT INTO history_states VALUES(?,?,?,?) ON CONFLICT(scope,cid) "
+                "DO UPDATE SET payload=excluded.payload,updated=excluded.updated", (scope, cid, payload, now))
+
+    def history_summary(self, scope, cid):
+        row = self.db.execute("SELECT payload FROM history_summaries WHERE scope=? AND cid=?", (scope, cid)).fetchone()
+        return json.loads(row[0]) if row else None
+
+    def save_history_summary(self, scope, cid, count, fingerprint, summary, generation, now):
+        state = self.scope(scope)
+        if state and (state["paused"] or state["generation"] != generation):
+            return False
+        payload = json.dumps({"count": count, "fingerprint": fingerprint, "summary": summary, "generation": generation},
+                             ensure_ascii=False)
+        with self.db:
+            self.db.execute(
+                "INSERT INTO history_summaries VALUES(?,?,?,?) ON CONFLICT(scope,cid) "
+                "DO UPDATE SET payload=excluded.payload,updated=excluded.updated", (scope, cid, payload, now))
+        return True
+
+    def archive_history(self, scope, cid, original, replacement, now, generation=0):
+        state = self.scope(scope)
+        if state and (state["paused"] or state["generation"] != generation):
+            return False
+        with self.db:
+            self.db.execute("INSERT INTO history_archives(scope,cid,original,replacement,created) VALUES(?,?,?,?,?)",
+                            (scope, cid, json.dumps(original, ensure_ascii=False),
+                             json.dumps(replacement, ensure_ascii=False), now))
+        return True
 
     def replace_daily(self, scope, actor, payload, generation):
         state = self.scope(scope)
@@ -335,14 +381,14 @@ class Store(LifeStore):
         with self.db:
             for row in result["memories"]:
                 subject = entity("$self" if companion else row["subject"])
-                self.db.execute(
-                    "UPDATE memories SET cues=? WHERE scope=? AND subject=? AND slot=? AND active=1",
-                    (json.dumps(row.get("cues", []), ensure_ascii=False), scope, subject, row["key"]),
-                )
                 old = self.db.execute(
                     "SELECT id,content FROM memories WHERE scope=? AND subject=? AND slot=? AND active=1",
                     (scope, subject, row["key"]),
                 ).fetchone()
+                # Importance filters new acquisitions, not factual corrections.
+                # A low-priority correction must retire an old, wrong belief.
+                if not old and row["importance"] < 0.5:
+                    continue
                 if old and old["content"] == row["content"]:
                     self.db.execute(
                         "UPDATE memories SET updated=?,confidence=?,importance=? WHERE id=?",
@@ -608,17 +654,22 @@ class Store(LifeStore):
                 "intentions",
                 "entity_aliases",
                 "relation_opinions",
+                "history_states",
+                "history_archives",
+                "history_summaries",
             ):
                 self.db.execute(f"DELETE FROM {table} WHERE scope=?", (scope,))
             self.db.execute("UPDATE scopes SET generation=generation+1,last_human=0,last_sent=0 WHERE id=?", (scope,))
 
     def initiative(self, scope, now, allow_questions=True, considered=()):
-        if self.db.execute("SELECT 1 FROM questions WHERE scope=? AND status='sent'", (scope,)).fetchone():
+        if self.db.execute("SELECT 1 FROM questions WHERE scope=? AND status='sent' AND created>=?",
+                           (scope, now - 30 * 86400)).fetchone():
             return None
         intent = self.next_intention(scope, now, allow_questions, considered)
         if intent:
             return intent
-        if self.db.execute("SELECT 1 FROM intentions WHERE scope=? AND status='sent'", (scope,)).fetchone():
+        if self.db.execute("SELECT 1 FROM intentions WHERE scope=? AND status='sent' AND updated>=?",
+                           (scope, now - 30 * 86400)).fetchone():
             return None
         if not allow_questions:
             return None
@@ -639,6 +690,9 @@ class Store(LifeStore):
         if days > 0:
             with self.db:
                 self.db.execute("DELETE FROM episodes WHERE created<?", (now - days * 86400,))
+                self.db.execute("DELETE FROM history_archives WHERE created<?", (now - days * 86400,))
+                self.db.execute("DELETE FROM history_states WHERE updated<?", (now - days * 86400,))
+                self.db.execute("DELETE FROM history_summaries WHERE updated<?", (now - days * 86400,))
         # Completed IDs remain as durable replay protection; their payload was removed.
 
     def stats(self, scope):
