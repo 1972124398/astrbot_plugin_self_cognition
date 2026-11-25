@@ -43,6 +43,7 @@ async def verify(source):
         assert [page.name for page in pages] == ["cognition"]
         assert metadata.i18n["zh-CN"]["views"]["cognition"]["title"] == "认知面板"
         assert (await page_service.resolve_plugin_page_file(metadata, "cognition", "app.js")).is_file()
+        assert (await page_service.resolve_plugin_page_file(metadata, "cognition", "people.js")).is_file()
         assert (await page_service.resolve_plugin_page_file(metadata, "cognition", "style.css")).is_file()
 
         await db_helper.upsert_umo_alias(origin, "member", "读书会", None)

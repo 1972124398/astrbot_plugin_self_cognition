@@ -119,3 +119,21 @@ companion 回顾保留不增加真人好感的来源边界，同时允许使用�
 主动表达解析兼容 WAIT 后的冒号解释、换行解释和句末标点；普通英文消息如 “Wait, I just remembered…” 仍可作为单候选自然文本发送。
 
 命令入口尚无 LLM 的 _trace_persona_id 时，使用 AstrBot 的当前会话和 resolve_selected_persona 解析同一人格，避免状态查询、召回或控制误落默认分区。解析只发生在显式命令中，正常聊天继续只读缓存。
+
+
+## 人物身份信息与面板（0.13.0）
+
+回顾输出可选 `identities`：`[{entity, name, nickname, titles, preferred_name, evidence}]`。`entity` 必须是已知身份、speaker/self 占位符或原文明说的人名；姓名字段必须出现在同一条原话证据里。仅真人/观察回顾接受身份条目，companion 不接受。`portraits.content.identity` 保存结构化字段及逐字段 quote/source/updated，`entity_aliases` 保存检索别称。没有新增表或更改 transport actor ID；展示名称仅由 dashboard 计算，普通聊天的 living_context 不附加身份指令。
+
+`Store.dashboard` 单独加载选中 scope 的人物和关系全集，前台 `Store.context`/`Memory.recall` 的预算、时序和相关性限制不变。人物卡展示 user/character/self，`people.actor` 先解析为稳定 entity ID 再保存画像，因此被提及人物也能留下认识。图谱使用原生 SVG 和本地 `people.js`，不访问外部 CDN，不写回数据。
+
+GUI 回归：Node 环境安装 Playwright 后运行 `node tests/test_panel_ui.cjs`。默认使用已安装的 Edge，无 Edge 时使用 Playwright Chromium。测试以本地 HTTP 静态页面和合成的只读 bridge 数据验证身份名称、证据、关系筛选、图谱聚焦、键盘操作、分页、小屏、跨会话切换、空状态与 XSS；不连接真实 AstrBot 或调用模型。可设置 `PANEL_SCREENSHOTS` 保存桌面/详情/手机截图。
+
+
+## 面板复核（0.13.1）
+
+`app.js` 的 overview 与 scope 请求分别以递增序号识别最新请求；会话变更会使旧 overview 失效。只有当前请求能更新内容或错误状态，失败不会被 refresh 后续成功提示覆盖。GUI 类型筛选与经历展开只读取已加载数据，无额外 API 写操作。
+
+聚焦图谱每页固定显示焦点人物，其余每页最多 17 个邻居；显示图中实际边数与筛选总数，避免把分页造成的隐藏误认为没有关系。`peopleById` 预先建立名称索引。身份称号证据保存在 `identity.title_evidence[title]`，旧 `evidence.titles` 在原话确实包含该称号时可继承，不用后来一个称号的证据覆盖之前所有称号。
+
+事实删除沿用原有清除派生画像、经历、挂念与使在途任务失效的语义，新增同 scope 别称清除；不更改其他 scope。回归覆盖这些删除边界、追加称号、并发刷新、读取失败与恢复、聚焦翻页和本地筛选。前台对话的事件、召回预算、模型调用与主动联系规则保持原实现。

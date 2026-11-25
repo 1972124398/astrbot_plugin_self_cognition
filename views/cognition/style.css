@@ -520,3 +520,144 @@ dialog .actions {
         background: #354a36
     }
 }
+/* People and relationships: all layout changes stay within the management view. */
+body { max-width: 1640px; margin: auto; padding: 36px clamp(16px, 4vw, 64px) 48px; }
+header { align-items: center; margin: 0 0 30px; }
+header h1 { margin: 8px 0; font-size: clamp(32px, 4vw, 46px); letter-spacing: -1px; }
+header p { font-size: 13px; }
+.eyebrow { display: block; color: #7b8c7c; font-size: 10px; letter-spacing: 1.5px; line-height: 1.8; }
+.heading-dot { color: #a6b873; }
+nav { gap: 8px; margin-bottom: 28px; }
+nav button { border-radius: 24px; padding: 10px 22px; }
+.stats { gap: 16px; }
+.stat { background: #fffefa; border-radius: 14px; }
+.stat:first-child { background: #e7eddf; border-color: #d3dfc7; }
+.stat strong { font-size: 32px; }
+.world-card { margin-bottom: 22px; padding: clamp(18px, 2.5vw, 30px); }
+.world-card > .section-head { align-items: flex-start; margin-bottom: 22px; }
+.world-card h2 { margin-top: 5px; font-size: 22px; }
+.world-card > .section-head p { font-size: 12px; }
+#world-count { flex-shrink: 0; background: #edf1e8; padding: 7px 12px; border-radius: 20px; }
+.world-tools { display: flex; align-items: flex-end; gap: 12px; padding-bottom: 22px; border-bottom: 1px solid var(--line); }
+.world-search { flex: 1; max-width: 440px; }
+.world-tools label { gap: 6px; }
+.world-tools button { margin-left: auto; font-size: 12px; }
+.world-layout { display: grid; grid-template-columns: minmax(0, 1.65fr) minmax(270px, 1fr); gap: 28px; margin-top: 22px; }
+.graph-pane { min-width: 0; }
+.graph-caption { display: flex; align-items: center; justify-content: space-between; min-height: 38px; color: var(--muted); font-size: 12px; }
+.graph-caption button { padding: 5px 12px; border-radius: 18px; font-size: 15px; }
+#graph { display: block; height: auto; aspect-ratio: 760 / 480; min-height: 280px; margin-top: 10px; background-color: #f8faf5; border: 1px solid #e5eadd; border-radius: 14px; }
+.graph-edge path { stroke: #5a8174; fill: none; stroke-width: 1.4; opacity: .7; }
+.graph-edge.ended path { stroke: #9ba6a0; stroke-dasharray: 6 5; }
+.graph-edge.disputed path { stroke: #b58b46; stroke-dasharray: 3 4; }
+#graph .edge-label { fill: #5d7469; font-size: 12px; paint-order: stroke; stroke: #f8faf5; stroke-width: 5px; stroke-linejoin: round; }
+.graph-person { cursor: pointer; outline: none; }
+.graph-person circle { fill: #e4ecdb; stroke: #b5c5aa; stroke-width: 1.5; transition: fill .15s; }
+.graph-person:hover circle, .graph-person:focus circle { fill: #d3e1c4; stroke: #315f53; stroke-width: 3; }
+.graph-person.selected circle { fill: #315f53; stroke: #315f53; }
+#graph .graph-person.selected .node-initial { fill: white; }
+#graph .node-initial { font-size: 17px; font-weight: 600; }
+#graph .node-name { fill: #425b50; font-size: 12px; paint-order: stroke; stroke: #f8faf5; stroke-width: 4px; }
+#graph .graph-note { fill: #859286; font-size: 11px; }
+.graph-legend { display: flex; flex-wrap: wrap; gap: 12px; padding: 12px 0 16px; color: var(--muted); font-size: 10px; }
+.graph-legend span { display: inline-flex; align-items: center; gap: 5px; }
+.graph-legend i { width: 15px; border-top: 2px solid #5a8174; }
+.graph-legend i.ended { border-top: 2px dashed #9ba6a0; }
+.graph-legend i.disputed { border-top: 2px dotted #b58b46; }
+.people-pane { border-left: 1px solid var(--line); padding-left: 24px; min-width: 0; }
+.people-pane .section-head { align-items: baseline; margin: 0 0 14px; }
+.people-pane h3 { margin: 0; }
+.people-pane .section-head span { font-size: 10px; }
+#people { max-height: 700px; overflow-y: auto; padding-right: 4px; scrollbar-width: thin; }
+.person-card { width: 100%; display: block; text-align: left; padding: 16px; border-radius: 12px; margin-bottom: 10px; background: #f9faf6; color: inherit; }
+.person-card.selected { border-color: #668b72; background: #edf3e7; box-shadow: inset 3px 0 #668b72; }
+.person-heading { display: flex; align-items: center; gap: 10px; }
+.avatar { background: #e3e9da; color: #526b4c; border-radius: 50%; width: 32px; height: 32px; display: grid; place-items: center; flex-shrink: 0; }
+.person-heading strong { font-size: 15px; font-weight: 600; overflow-wrap: anywhere; }
+.person-kind { color: #87907e; margin-left: auto; font-size: 10px; white-space: nowrap; }
+.person-card p { color: #667568; font-size: 12px; margin: 10px 0; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.person-card small { color: #8b9587; font-size: 10px; }
+.person-aliases { margin-top: 9px; font-size: 11px; color: #83907a; overflow-wrap: anywhere; }
+.relation-card { padding: 13px 0; border-top: 1px solid #e9ede4; font-size: 12px; }
+.relation-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.text-button { background: transparent; border: none; padding: 0; color: #315f53; font-size: 12px; text-align: left; }
+.text-button:hover { background: none; text-decoration: underline; }
+.relation-arrow { color: #9ba993; }
+.tag.ended { background: #edf0eb; color: #899183; }
+.tag.disputed { background: #f7eed8; color: #967035; }
+.relation-card p { font-size: 12px; margin: 7px 0; }
+.relation-card details { margin-top: 7px; color: #8a9485; font-size: 11px; }
+.relation-card details small { display: block; padding: 5px 0; }
+.quote { border-left: 2px solid #cfdbbf; padding-left: 12px; overflow-wrap: anywhere; }
+#relations-more, #people-more { margin: 12px 0 0; width: 100%; font-size: 12px; }
+.person-detail { margin-top: 25px; border-top: 1px solid var(--line); padding-top: 24px; }
+.profile-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 32px; }
+.profile-field { margin-bottom: 14px; }
+.profile-field small { display: block; color: #8b977e; font-size: 10px; }
+.profile-field p { color: #425749; font-size: 13px; overflow-wrap: anywhere; }
+.person-detail details { font-size: 11px; color: #899580; margin-top: 20px; }
+.person-detail details small { display: block; overflow-wrap: anywhere; }
+.person-detail .section-head h2 { font-size: 23px; }
+.quiet-card { margin-bottom: 22px; }
+.world-card button:disabled { cursor: default; }
+[hidden] { display: none !important; }
+@media (max-width: 1000px) { .world-layout { grid-template-columns: minmax(0, 1.4fr) minmax(240px, 1fr); gap: 18px; } .people-pane { padding-left: 18px; } .world-tools { flex-wrap: wrap; } .world-tools button { margin-left: 0; } }
+@media (max-width: 720px) {
+    body { padding: 22px 14px; }
+    header { align-items: flex-start; gap: 8px; } header > button { font-size: 11px; padding: 9px; white-space: nowrap; }
+    .stats { grid-template-columns: repeat(2, 1fr); gap: 10px; }
+    .stat { padding: 14px; } .stat strong { font-size: 26px; }
+    .world-card > .section-head { display: block; } #world-count { display: inline-block; margin-top: 8px; }
+    .world-tools { gap: 10px; } .world-search { flex-basis: 100%; max-width: none; }
+    .world-layout, .profile-columns { grid-template-columns: 1fr; gap: 20px; }
+    .people-pane { border-left: 0; padding: 20px 0 0; border-top: 1px solid var(--line); }
+    #people { max-height: 460px; }
+    #graph { min-height: 250px; }
+    .graph-legend { line-height: 1.5; }
+    .world-card h2 { font-size: 20px; }
+    .toolbar > label { width: 100%; } #scope, #query { width: 100%; max-width: 100%; }
+    .section-head { flex-wrap: wrap; }
+}
+
+.graph-viewport { overflow-x: auto; border-radius: 14px; scrollbar-width: thin; }
+#relations { max-height: 420px; overflow-y: auto; padding-right: 5px; scrollbar-width: thin; }
+@media (max-width: 720px) {
+    .graph-viewport #graph { min-width: 600px; min-height: 0; }
+    .graph-legend::after { content: "小屏可横向滑动图谱，或在人物卡中选择"; color: #899580; }
+    #relations { max-height: 360px; }
+}
+/* Browsing refinements: keep identity details close to the clicked person. */
+html { scroll-behavior: smooth; scroll-padding-top: 20px; }
+.section-nav { position: sticky; top: 0; z-index: 3; display: flex; flex-wrap: wrap; gap: 8px; padding: 10px 0; margin: 0 0 22px; background: #f5f6f1f2; backdrop-filter: blur(10px); }
+.section-nav a { color: #71816d; font-size: 12px; padding: 9px 15px; text-decoration: none; border: 1px solid #dfe7d7; border-radius: 22px; background: #fffefa; }
+.section-nav a:hover, .section-nav a:focus-visible { background: #e4edda; color: #315f53; outline-offset: 3px; }
+.scope-status { padding: 16px 18px; border: 1px solid #dce6d1; background: #edf2e6; border-radius: 12px; color: #637957; font-size: 13px; }
+.people-pane { position: sticky; top: 66px; align-self: start; max-height: calc(100vh - 84px); overflow-y: auto; scrollbar-width: thin; padding-right: 3px; }
+.people-pane .person-detail { margin: 0 0 22px; border: 0; border-bottom: 1px solid #dce5d2; padding: 0 0 22px; }
+.people-pane .profile-columns { grid-template-columns: 1fr; gap: 8px; }
+.people-pane .person-detail .section-head { margin-bottom: 18px; }
+.people-pane .person-detail .section-head button { padding: 7px 10px; font-size: 11px; white-space: nowrap; }
+.people-pane .profile-field { margin-bottom: 10px; }
+.people-pane .person-detail details { margin-top: 12px; }
+.people-pane.has-selection #people { max-height: 240px; }
+.graph-coverage { font-size: 11px; color: #809077; margin-top: 9px; }
+.content-count { display: block; font-size: 11px; color: #85917d; line-height: 1.6; }
+#memory-kind { min-width: 140px; }
+#experience-card small { display: block; font-size: 11px; color: #839078; margin-bottom: 5px; }
+#experiences-more { margin-top: 12px; width: 100%; font-size: 12px; }
+.maintenance { border: 1px solid #e0e5db; border-radius: 12px; background: #f4f5ef; padding: 16px 20px; margin-bottom: 24px; }
+.maintenance > summary { font-size: 12px; color: #7c8775; cursor: pointer; }
+.maintenance .actions { margin-bottom: 0; }
+#memory-card, #world-card, #experience-card, #life-card { scroll-margin-top: 70px; }
+@media (max-width: 720px) {
+    .section-nav { gap: 6px; margin-bottom: 16px; }
+    .section-nav a { font-size: 11px; padding: 8px 11px; }
+    .people-pane { position: static; max-height: none; overflow: visible; }
+    .people-pane .person-detail { padding-top: 5px; }
+    .maintenance { padding: 14px; }
+    #memory-kind { min-width: 125px; }
+}
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+
+.columns { align-items: start; }
+#memory-card { margin-bottom: 22px; }

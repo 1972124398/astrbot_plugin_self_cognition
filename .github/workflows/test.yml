@@ -20,4 +20,18 @@ jobs:
       - run: python -m pip install '${{ matrix.astrbot }}' ruff -r astrbot_plugin_self_cognition/requirements.txt
       - run: python -m ruff check astrbot_plugin_self_cognition
       - run: node --check astrbot_plugin_self_cognition/views/cognition/app.js
+      - run: node --check astrbot_plugin_self_cognition/views/cognition/people.js
       - run: python -m unittest discover -s astrbot_plugin_self_cognition/tests -v
+
+  panel:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: astrbot_plugin_self_cognition
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm install --no-save playwright
+      - run: npx playwright install --with-deps chromium
+      - run: node astrbot_plugin_self_cognition/tests/test_panel_ui.cjs

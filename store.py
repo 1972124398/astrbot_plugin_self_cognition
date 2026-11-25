@@ -436,6 +436,9 @@ class Store(LifeStore):
                     (scope, speaker["id"], speaker["name"], "character" if speaker["id"] == "self" else "user"),
                 )
             if not companion:
+                entity("$speaker")
+                for item in result.get("identities", []):
+                    self.save_identity(job, item, now, entity)
                 for row in result["relations"]:
                     source, target = entity(row["source"]), entity(row["target"])
                     status, description = row.get("status", "current"), row.get("description", "")
@@ -475,7 +478,7 @@ class Store(LifeStore):
                 entity("$speaker")
                 people = result.get("people") or [dict(result, actor=actor)]
                 for person in people:
-                    who = actor if person["actor"] == "$speaker" else person["actor"]
+                    who = entity(person["actor"])
                     self.save_person(job, dict(person, actor=who), now)
             self.save_life(job, result, now, entity)
             if result.get("self_reflection"):
@@ -518,6 +521,12 @@ class Store(LifeStore):
 
     def dashboard(self, scope, query=""):
         data = self.context(scope, query=query, limit=30)
+        # Panel browsing is separate from the bounded conversation recall candidates.
+        data["entities"] = [dict(row) for row in self.db.execute(
+            "SELECT * FROM entities WHERE scope=? ORDER BY kind DESC,name,id", (scope,))]
+        data["relations"] = [dict(row) for row in self.db.execute(
+            "SELECT * FROM relations WHERE scope=? ORDER BY updated DESC,source,target,label", (scope,))]
+        self.enrich_relations(scope, data["relations"])
         data["all_questions"] = [
             dict(r)
             for r in self.db.execute(
@@ -529,6 +538,16 @@ class Store(LifeStore):
             for r in self.db.execute("SELECT * FROM portraits WHERE scope=?", (scope,))
         }
         data.update(self.life_view(scope))
+        aliases = {}
+        for alias in data["aliases"]:
+            aliases.setdefault(alias["entity"], []).append(alias["alias"])
+        for person in data["entities"]:
+            identity = data["portraits"].get(person["id"], {}).get("identity", {})
+            person["identity"] = identity
+            person["aliases"] = aliases.get(person["id"], [])
+            person["display_name"] = (identity.get("preferred_name") or identity.get("nickname")
+                                      or identity.get("name") or next(iter(identity.get("titles", [])), "")
+                                      or person["name"] or "尚未知道名字")
         data["relation_history"] = [
             dict(r)
             for r in self.db.execute(
@@ -635,6 +654,7 @@ class Store(LifeStore):
             self.db.execute("DELETE FROM jobs WHERE scope=?", (scope,))
             self.db.execute("DELETE FROM episodes WHERE scope=?", (scope,))
             self.db.execute("DELETE FROM portraits WHERE scope=?", (scope,))
+            self.db.execute("DELETE FROM entity_aliases WHERE scope=?", (scope,))
             for table in ("experiences", "characters", "intentions"):
                 self.db.execute(f"DELETE FROM {table} WHERE scope=?", (scope,))
         return True

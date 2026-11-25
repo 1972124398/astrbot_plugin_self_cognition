@@ -129,6 +129,7 @@ def parse_reflection(raw, human, *, companion=False, known_entities=(), reply=""
         "character": {},
         "intentions": [],
         "aliases": [],
+        "identities": [],
     }
 
     def supported(item):
@@ -274,7 +275,24 @@ def parse_reflection(raw, human, *, companion=False, known_entities=(), reply=""
         for item in items("aliases"):
             entity = text(item.get("entity"), 80)
             if valid_entity(entity):
-                result["aliases"].append({"entity": entity, "names": string_list(item.get("names"))})
+                # Older reflection outputs omit evidence; still require literal human source text.
+                quote = supported(item) if "evidence" in item else human
+                names = [name for name in string_list(item.get("names")) if name in quote]
+                if names:
+                    result["aliases"].append({"entity": entity, "names": names})
+    if not companion:
+        for item in items("identities"):
+            who = text(item.get("entity"), 80)
+            evidence = supported(item)
+            if not who or not valid_entity(who) or not evidence:
+                continue
+            identity = {key: text(item.get(key), 100) for key in ("name", "nickname", "preferred_name")
+                        if text(item.get(key), 100) and text(item.get(key), 100) in evidence}
+            titles = [value for value in string_list(item.get("titles")) if value in evidence][:8]
+            if titles:
+                identity["titles"] = titles
+            if identity:
+                result["identities"].append({"entity": who, "identity": identity, "evidence": evidence})
     for item in items("intentions"):
         actor = text(item.get("actor"), 80) or "$speaker"
         topic, thought = text(item.get("topic"), 120), text(item.get("thought"), 700)
@@ -349,7 +367,12 @@ sticker_library 是当前表情库目录，可用于理解聊天梗和表情表�
   不爱关心的人格可以没有 care；想聊自己的事、接着玩或暂时没兴趣都正常。不要为延续聊天安排问题。
   更新已有主题沿用 topic；普通对话里已经提起的标 offered，得到回答或完成标 done，放下标 dropped，其余 pending。
   明确日期可填带时区的 ISO not_before，否则留空。known 中的旧 curiosity/unfinished 也视为同一件挂念，不再重复生成。
-- aliases：明确的人物别称对应（entity/names）。self_reflection 仅在真的有新认识时写，可省略。
+- identities：有明确原话时记住人物的姓名、昵称、称号和自己希望被怎样称呼。
+  每项 entity 用 speakers/known 中的确定 id、$speaker、$self 或原文明说的人名；name/nickname/preferred_name/titles 都必须逐字出现在同一条 evidence 中。
+  name 是明确姓名，nickname 是昵称，titles 是称号列表，preferred_name 仅在本人明确表达称呼偏好时填写；不要将自己拒绝的称呼记为偏好。
+  evidence 摘自对应真人原话，分清“我的名字”“某人的名字”和转述，不靠角色设定、平台账号或机器人的称呼猜姓名。
+  别人说“他是老板”不代表当前发言者是老板；重名、相同称号不等于同一个人。没有新信息就省略，不为补全画像主动询问。
+- aliases：明确的人物别称对应（entity/names/evidence），别称必须出现在真人原话中，不把推测或机器人称呼写成别称。self_reflection 仅在真的有新认识时写，可省略。
 
 输出 JSON，未列出的字段不需要写。例如：
 {"experience":{"title":"…","story":"…"},"people":[{"actor":"user:…","portrait":{"impression":"…"}}],

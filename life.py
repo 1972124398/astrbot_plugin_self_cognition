@@ -85,6 +85,36 @@ class LifeStore:
                 (scope, actor, question),
             )
 
+    def save_identity(self, job, item, now, entity):
+        who = entity(item["entity"])
+        identity = dict(item["identity"])
+        old = self.db.execute("SELECT content FROM portraits WHERE scope=? AND actor=?", (job["scope"], who)).fetchone()
+        previous = json.loads(old[0]).get("identity", {}) if old else {}
+        merged = {**previous, **identity}
+        if "titles" in identity:
+            merged["titles"] = list(dict.fromkeys([*previous.get("titles", []), *identity["titles"]]))[:16]
+        evidence = dict(previous.get("evidence", {}))
+        title_evidence = dict(previous.get("title_evidence", {}))
+        legacy = evidence.get("titles", {})
+        for title in previous.get("titles", []):
+            if title in legacy.get("quote", ""):
+                title_evidence.setdefault(title, dict(legacy))
+        source = {"quote": item["evidence"], "source": job["id"], "updated": now}
+        for key in identity:
+            if key != "titles":
+                evidence[key] = dict(source)
+        for title in identity.get("titles", []):
+            title_evidence[title] = dict(source)
+        if title_evidence:
+            merged["title_evidence"] = {title: title_evidence[title] for title in merged.get("titles", [])
+                                         if title in title_evidence}
+        merged["evidence"] = evidence
+        self.save_portrait(job["scope"], who, {"identity": merged}, now)
+        names = [identity.get(key, "") for key in ("name", "nickname", "preferred_name")]
+        names.extend(identity.get("titles", []))
+        self.db.executemany("INSERT OR IGNORE INTO entity_aliases VALUES(?,?,?)",
+                            [(job["scope"], name, who) for name in names if name])
+
     def save_life(self, job, result, now, entity):
         scope = job["scope"]
         experience = result.get("experience", {})

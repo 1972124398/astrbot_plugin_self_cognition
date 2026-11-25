@@ -2,19 +2,29 @@
 <html lang="zh-CN">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>认知面板</title><link rel="stylesheet" href="./style.css"></head>
 <body>
-  <header><h1>自主认知</h1><button id="refresh">刷新认知</button></header>
+  <header><div><span class="eyebrow">记得的人 · 走过的事 · 理解的世界</span><h1>自主认知<span class="heading-dot">.</span></h1><p>让记忆慢慢成为理解，让每个人都有自己的位置。</p></div><button id="refresh">刷新认知 ↻</button></header>
   <div id="notice" role="status" aria-live="polite"></div>
   <nav aria-label="认知面板"><button class="active" data-tab="memory">记忆与关系</button><button data-tab="settings">行为与配置</button></nav>
   <main>
     <section id="memory" class="panel">
       <div class="toolbar"><label>会话与人格 <select id="scope"><option value="">尚无对话</option></select></label><label>寻找回忆 <input id="query" placeholder="例如：无糖茶、上次一起玩的游戏"></label><button id="search" disabled>检索</button></div>
+      <p id="scope-loading" class="scope-status" role="status" hidden></p>
       <p id="scope-empty" class="empty">开始聊天并完成记录后，可以在这里查看认知信息。</p>
       <div id="scope-details" hidden>
       <div id="stats" class="stats"></div>
-      <div class="columns"><article><div class="section-head"><h2>人物关系</h2><span>箭头表示陈述方向</span></div><svg id="graph" viewBox="0 0 640 380" role="img" aria-label="人物关系图谱"></svg><div id="relations"></div></article><article><div class="section-head"><h2>长期相处</h2><span>积累不会随时间消失</span></div><div id="feelings"></div><h3>还想了解</h3><div id="questions"></div></article></div>
-      <article><div class="section-head"><h2>留下的回忆</h2><span>每条记忆，都能查看来处</span></div><div id="memories" class="memory-grid"><p class="empty">开始聊天后，值得记住的经历会出现在这里。</p></div></article>
-      <div class="actions"><button data-action="pause">暂停此会话认知</button><button data-action="resume">恢复</button><button data-action="retry">重试失败整理</button><button class="danger" data-action="clear_confirm">清空此会话认知</button><span>操作仅作用于上方选定的会话和人格。</span></div>
-      <div class="columns"><article><h2>一路留下的经历</h2><div id="experiences"></div></article><article><h2>自己的生活与挂念</h2><div id="character"></div><div id="intentions"></div></article></div>
+      <nav class="section-nav" aria-label="记忆内容导航"><a href="#world-card">人物与关系</a><a href="#memory-card">留下的回忆</a><a href="#experience-card">经历</a><a href="#life-card">生活与挂念</a></nav>
+      <article class="world-card" id="world-card">
+        <div class="section-head"><div><span class="eyebrow">PEOPLE & CONNECTIONS</span><h2>记忆中的人物与关系</h2><p>关系保留方向、原话与不同人的看法。每个名字，都有自己的来处。</p></div><span id="world-count"></span></div>
+        <div class="world-tools"><label class="world-search">寻找人物<input id="person-search" type="search" placeholder="姓名、昵称、称号或平台名"></label><label>关系范围<select id="relation-state"><option value="all">全部关系</option><option value="current">当前关系</option><option value="ended">曾经的关系</option><option value="disputed">看法有分歧</option></select></label><button id="world-reset" type="button">查看全部人物</button></div>
+        <div class="world-layout"><div class="graph-pane"><div class="graph-caption"><span id="graph-caption">人物关系图谱</span><div><button id="graph-prev" type="button" aria-label="上一组图谱人物">←</button><button id="graph-next" type="button" aria-label="下一组图谱人物">→</button></div></div><div class="graph-viewport"><svg id="graph" viewBox="0 0 760 480" role="group" aria-label="人物关系图谱，点击人物查看画像"></svg></div><p id="graph-coverage" class="graph-coverage"></p><div class="graph-legend"><span><i></i>当前关系</span><span><i class="ended"></i>曾经</span><span><i class="disputed"></i>看法有分歧</span><span>箭头表示关系方向，点击节点聚焦</span></div><div id="relations"></div><button id="relations-more" type="button" hidden>显示更多关系</button></div>
+        <aside class="people-pane"><section id="person-detail" class="person-detail" hidden aria-live="polite"></section><div class="section-head"><h3>人物画像</h3><span>本人、聊天伙伴与被提及的人</span></div><div id="people"></div><button id="people-more" type="button" hidden>显示更多人物</button></aside></div>
+
+      </article>
+      <article class="quiet-card"><div class="section-head"><h2>还放在心上的事</h2><span>没有待解的问题，也可以安静相处。</span></div><div id="questions"></div></article>
+      <article id="memory-card"><div class="section-head"><div><h2>留下的回忆</h2><span id="memory-count" class="content-count"></span></div><label>记忆类型<select id="memory-kind"><option value="">全部类型</option><option value="fact">事实</option><option value="preference">偏好</option><option value="episode">经历</option><option value="lesson">相处经验</option><option value="self">自我认识</option></select></label></div><div id="memories" class="memory-grid"><p class="empty">开始聊天后，值得记住的经历会出现在这里。</p></div></article>
+      <div class="columns"><article id="experience-card"><div class="section-head"><h2>一路留下的经历</h2><span id="experience-count" class="content-count"></span></div><div id="experiences"></div><button id="experiences-more" type="button" hidden>显示更多经历</button></article><article id="life-card"><h2>自己的生活与挂念</h2><div id="character"></div><div id="intentions"></div></article></div>
+      <details class="maintenance"><summary>管理此会话的认知记录</summary>      <div class="actions"><button data-action="pause">暂停此会话认知</button><button data-action="resume">恢复</button><button data-action="retry">重试失败整理</button><button class="danger" data-action="clear_confirm">清空此会话认知</button><span>操作仅作用于上方选定的会话和人格。</span></div>
+      </details>
       </div>
     </section>
     <section id="settings" class="panel" hidden><article><div class="section-head"><h2>行为与配置</h2><button id="save" class="primary" disabled>保存配置</button></div><form id="settings-form"></form></article></section>
