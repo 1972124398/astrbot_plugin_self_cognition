@@ -505,6 +505,8 @@ class SelfCognition(Star):
                 "human": evidence,
                 "reply": "",
                 "source_kind": "companion",
+                "companion_kind": kind,
+                "own_utterance": text(data.get("text"), 4000) if kind == "initiative" else "",
                 "provider_id": "",
                 "captured": time.time(),
             }
@@ -514,6 +516,16 @@ class SelfCognition(Star):
         state = await self.memory.call(self.store.scope, job["scope"])
         if not state or not self.allowed(job["origin"]) or state["paused"] or state["generation"] != job["generation"]:
             return False
+        if job.get("companion_kind") == "initiative":
+            # Own speech proves only that we said it, not that the recipient promised it.
+            utterances = [turn.get("own_utterance", "") for turn in job.get("turns", [job])]
+            story = "\n".join("我曾主动说过（对方是否认可未知）：" + value for value in utterances if value)
+            result = parse_reflection("{}", "", companion=True)
+            result["experience"] = {"title": "我主动说过的话", "story": story[:1800]}
+            applied = await self.memory.call(self.store.apply, job, result)
+            if applied:
+                await self.memory.refresh(job["scope"])
+            return applied
         recalled = self.memory.recall(job["scope"], job["actor"], job["human"], 12)
         payload = {
             key: job.get(key) for key in ("human", "reply", "turns", "persona", "source_kind", "name", "captured")

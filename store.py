@@ -266,6 +266,7 @@ class Store(LifeStore):
             key = (
                 row["scope"],
                 "scene" if item["source_kind"] in {"dialogue", "observed"} else item["source_kind"],
+                item.get("companion_kind", ""),
                 item.get("provider_id", ""),
                 item.get("persona", ""),
             )
@@ -287,7 +288,10 @@ class Store(LifeStore):
                 {e["id"]: e for _, item in chosen for e in item.get("mentioned_users", [])}.values()
             )
             job["turns"] = [
-                {k: item.get(k, "") for k in ("human", "reply", "captured", "name", "actor", "source_kind")}
+                {
+                    k: item.get(k, "")
+                    for k in ("human", "reply", "captured", "name", "actor", "source_kind", "own_utterance")
+                }
                 for _, item in chosen
             ]
             job["speakers"] = list(

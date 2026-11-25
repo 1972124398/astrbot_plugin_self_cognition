@@ -172,6 +172,7 @@ class SelectiveHookTests(unittest.IsolatedAsyncioTestCase):
             event.is_stopped = lambda: False
             self.plugin.companions[event.unified_msg_origin] = {"short_term_mood": {"inner_state": "缓存还在生气"}}
             request = ProviderRequest(prompt=event.message)
+            mood.state.note_scope = mood.snapshot(event, request).key
             await mood.time_request(event, request)
             await self.plugin.prepare(event, request)
             with patch.object(mood, "enqueue"):
