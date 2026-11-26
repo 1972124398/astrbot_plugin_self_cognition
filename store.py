@@ -89,8 +89,14 @@ class Store(LifeStore, FollowupStore):
           updated REAL NOT NULL, PRIMARY KEY(scope,cid));
         PRAGMA user_version=3;
         """)
-        if "persona_prompt" not in {r[1] for r in self.db.execute("PRAGMA table_info(scopes)")}:
+        scope_columns = {r[1] for r in self.db.execute("PRAGMA table_info(scopes)")}
+        if "persona_prompt" not in scope_columns:
             self.db.execute("ALTER TABLE scopes ADD COLUMN persona_prompt TEXT NOT NULL DEFAULT ''")
+        if "history_generation" not in scope_columns:
+            with self.db:
+                self.db.execute("BEGIN")
+                self.db.execute("ALTER TABLE scopes ADD COLUMN history_generation INTEGER NOT NULL DEFAULT 0")
+                self.db.execute("UPDATE scopes SET history_generation=generation")
         if "status" not in {r[1] for r in self.db.execute("PRAGMA table_info(relations)")}:
             with self.db:
                 self.db.execute("BEGIN")
@@ -127,20 +133,28 @@ class Store(LifeStore, FollowupStore):
         row = self.db.execute("SELECT payload FROM history_states WHERE scope=? AND cid=?", (scope, cid)).fetchone()
         return json.loads(row[0]) if row else {}
 
-    def save_history_state(self, scope, cid, timeline, human_at, now, pending_idle=False):
+    def save_history_state(self, scope, cid, timeline, human_at, now, pending_idle=False, *, generation=None):
+        if generation is not None and not self.history_is_current(scope, generation):
+            return False
         payload = json.dumps({"timeline": timeline, "human_at": human_at, "pending_idle": pending_idle})
         with self.db:
             self.db.execute(
                 "INSERT INTO history_states VALUES(?,?,?,?) ON CONFLICT(scope,cid) "
                 "DO UPDATE SET payload=excluded.payload,updated=excluded.updated", (scope, cid, payload, now))
+        return True
 
     def history_summary(self, scope, cid):
         row = self.db.execute("SELECT payload FROM history_summaries WHERE scope=? AND cid=?", (scope, cid)).fetchone()
         return json.loads(row[0]) if row else None
 
-    def save_history_summary(self, scope, cid, count, fingerprint, summary, generation, now):
+    def history_is_current(self, scope, generation):
         state = self.scope(scope)
-        if state and (state["paused"] or state["generation"] != generation):
+        return (not state and generation == 0) or (
+            state is not None and not state["paused"] and state["history_generation"] == generation
+        )
+
+    def save_history_summary(self, scope, cid, count, fingerprint, summary, generation, now):
+        if not self.history_is_current(scope, generation):
             return False
         payload = json.dumps({"count": count, "fingerprint": fingerprint, "summary": summary, "generation": generation},
                              ensure_ascii=False)
@@ -151,8 +165,7 @@ class Store(LifeStore, FollowupStore):
         return True
 
     def archive_history(self, scope, cid, original, replacement, now, generation=0):
-        state = self.scope(scope)
-        if state and (state["paused"] or state["generation"] != generation):
+        if not self.history_is_current(scope, generation):
             return False
         with self.db:
             self.db.execute("INSERT INTO history_archives(scope,cid,original,replacement,created) VALUES(?,?,?,?,?)",
@@ -644,7 +657,10 @@ class Store(LifeStore, FollowupStore):
 
     def pause(self, scope, paused):
         with self.db:
-            self.db.execute("UPDATE scopes SET paused=?,generation=generation+1 WHERE id=?", (int(paused), scope))
+            self.db.execute(
+                "UPDATE scopes SET paused=?,generation=generation+1,history_generation=history_generation+1 WHERE id=?",
+                (int(paused), scope),
+            )
             self.db.execute("DELETE FROM jobs WHERE scope=? AND state IN ('pending','failed')", (scope,))
 
     def contact(self, scope, allowed):
@@ -660,7 +676,10 @@ class Store(LifeStore, FollowupStore):
                 return False
             self.db.execute("DELETE FROM memories WHERE scope=? AND subject=? AND slot=?", (scope, *row))
             # Invalidate in-flight analysis and remove its raw sources to avoid resurrection.
-            self.db.execute("UPDATE scopes SET generation=generation+1 WHERE id=?", (scope,))
+            self.db.execute(
+                "UPDATE scopes SET generation=generation+1,history_generation=history_generation+1 WHERE id=?",
+                (scope,),
+            )
             self.remember_snapshot_receipts(scope)
             self.db.execute("DELETE FROM jobs WHERE scope=?", (scope,))
             self.db.execute("DELETE FROM episodes WHERE scope=?", (scope,))
@@ -670,33 +689,74 @@ class Store(LifeStore, FollowupStore):
                 self.db.execute(f"DELETE FROM {table} WHERE scope=?", (scope,))
         return True
 
+    def clear_memory(self, scope):
+        with self.db:
+            self._clear_memory(scope)
+            self._discard_reflections(scope)
+
+    def clear_context(self, scope):
+        with self.db:
+            self._clear_context(scope)
+
+    def clear_records(self, scope):
+        with self.db:
+            self._discard_reflections(scope)
+            self._clear_records(scope)
+
+    def clear_companion_cache(self, scopes, role):
+        with self.db:
+            for scope in scopes:
+                if role == "daily_routine":
+                    self.forget_daily(scope)
+                    continue
+                for row in self.db.execute("SELECT id,payload FROM jobs WHERE scope=? AND state!='done'", (scope,)):
+                    job = json.loads(row["payload"])
+                    if job.get("source_kind") != "companion":
+                        continue
+                    source = job.get("companion_role")
+                    if not source:
+                        try:
+                            evidence = json.loads(job.get("human", ""))
+                        except (TypeError, ValueError):
+                            continue
+                        source = evidence.get("source") if isinstance(evidence, dict) else None
+                    if source == role:
+                        self.db.execute("INSERT OR IGNORE INTO snapshot_receipts VALUES(?,?)", (scope, row["id"]))
+                        self.db.execute("DELETE FROM jobs WHERE id=?", (row["id"],))
+
     def clear(self, scope):
         with self.db:
-            self.forget_daily(scope)
-            self.remember_snapshot_receipts(scope)
-            for table in (
-                "memories",
-                "entities",
-                "relations",
-                "relation_history",
-                "feelings",
-                "questions",
-                "jobs",
-                "episodes",
-                "portraits",
-                "experiences",
-                "characters",
-                "intentions",
-                "question_threads",
-                "question_receipts",
-                "entity_aliases",
-                "relation_opinions",
-                "history_states",
-                "history_archives",
-                "history_summaries",
-            ):
-                self.db.execute(f"DELETE FROM {table} WHERE scope=?", (scope,))
-            self.db.execute("UPDATE scopes SET generation=generation+1,last_human=0,last_sent=0 WHERE id=?", (scope,))
+            self._clear_memory(scope)
+            self._discard_reflections(scope, include_completed=True)
+            self._clear_records(scope)
+
+    def _clear_memory(self, scope):
+        self.forget_daily(scope)
+        for table in (
+            "memories", "entities", "relations", "relation_history", "relation_opinions", "feelings", "questions",
+            "portraits", "experiences", "characters", "intentions", "question_threads", "question_receipts",
+            "entity_aliases",
+        ):
+            self.db.execute(f"DELETE FROM {table} WHERE scope=?", (scope,))
+        self.db.execute("UPDATE scopes SET last_human=0,last_sent=0 WHERE id=?", (scope,))
+
+    def _discard_reflections(self, scope, *, include_completed=False):
+        self.remember_snapshot_receipts(scope)
+        sql = "DELETE FROM jobs WHERE scope=?"
+        if not include_completed:
+            sql += " AND state!='done'"
+        self.db.execute(sql, (scope,))
+        self.db.execute("UPDATE scopes SET generation=generation+1 WHERE id=?", (scope,))
+
+    def _clear_context(self, scope):
+        self.db.execute("UPDATE scopes SET history_generation=history_generation+1 WHERE id=?", (scope,))
+        for table in ("history_states", "history_summaries"):
+            self.db.execute(f"DELETE FROM {table} WHERE scope=?", (scope,))
+
+    def _clear_records(self, scope):
+        self._clear_context(scope)
+        for table in ("episodes", "history_archives"):
+            self.db.execute(f"DELETE FROM {table} WHERE scope=?", (scope,))
 
     def initiative(self, scope, now, allow_questions=True, considered=()):
         if self.db.execute("SELECT 1 FROM questions WHERE scope=? AND status='sent' AND created>=?",

@@ -14,9 +14,12 @@ from astrbot.api.provider import ProviderRequest
 from astrbot.api.message_components import At
 from astrbot_plugin_self_cognition.cognition import actor_key, scope_key
 from astrbot.api.web import PluginRequest, bind_request_context
+from astrbot.core.conversation_mgr import ConversationManager
 from astrbot.core.db.sqlite import SQLiteDatabase
+from astrbot.core.platform_message_history_mgr import PlatformMessageHistoryManager
 from starlette.requests import Request
 from astrbot.core.message.message_event_result import MessageEventResult, ResultContentType
+from astrbot.core.utils.session_lock import session_lock_manager
 from astrbot_plugin_self_cognition.main import SelfCognition, TURN
 from test_cognition import HUMAN, reflection
 
@@ -332,6 +335,168 @@ class Hooks(unittest.IsolatedAsyncioTestCase):
         ):
             with self.assertRaises(ValueError):
                 self.plugin.validate_settings(value)
+
+    async def test_panel_cleanup_with_native_history_and_separate_personas(self):
+        event, _ = await self.exchange()
+        store = self.plugin.store
+        job = event.get_extra(TURN)
+        origin, scope = job["origin"], job["scope"]
+        other = scope_key(origin, "other")
+        store.ensure_scope(other, origin, "other")
+        self.assertTrue(store.enqueue({**job, "id": "other-persona", "scope": other}))
+        pending = {**job, "id": "waiting"}
+        self.assertTrue(store.enqueue(pending))
+        now = time.time()
+        self.plugin.memory.focus[scope, job["actor"]] = ("旧话题", now)
+
+        database = SQLiteDatabase(str(Path(self.temp.name) / "astrbot.sqlite3"))
+        self.addAsyncCleanup(database.engine.dispose)
+        await database.initialize()
+        history = [{"role": "user", "content": "之前的对话"}]
+        current = await database.create_conversation(origin, "test", content=history, persona_id="friend")
+        cid = current.conversation_id
+        previous = await database.create_conversation(origin, "test", content=history, persona_id="friend")
+        manager = ConversationManager(database)
+        manager.session_conversations[origin] = cid
+        self.context.conversation_manager = manager
+        self.context.get_platform_inst = lambda _: None
+        self.context.persona_manager.resolve_selected_persona = AsyncMock(return_value=("friend", None, None, False))
+        messages = self.context.message_history_manager = PlatformMessageHistoryManager(database)
+        other_origin = "test:FriendMessage:bob"
+        for user_id in (origin, other_origin):
+            await messages.insert("test", user_id, {"type": "user", "message": []})
+
+        self.assertTrue(store.archive_history(scope, cid, history, [], now))
+        self.assertTrue(store.save_history_summary(scope, cid, 1, "digest", {"facts": ["旧事实"]}, 0, now))
+        self.assertTrue(store.save_history_state(scope, cid, [], now, now, generation=0))
+
+        async def control(action, target=scope, username="admin"):
+            async def receive():
+                return {"type": "http.request", "body": json.dumps({"scope": target, "action": action}).encode()}
+
+            req = Request({"type": "http", "method": "POST", "path": "/", "query_string": b"", "headers": []},
+                          receive=receive)
+            with bind_request_context(PluginRequest(req, username=username)):
+                return (await self.plugin.page_control()).status_code
+
+        self.assertEqual(await control("clear_records", username=None), 401)
+        self.assertEqual(await control("clear_context", other), 409)
+        self.assertEqual(json.loads((await manager.get_conversation(origin, cid)).history), history)
+
+        started = asyncio.Event()
+
+        async def request_cleanup():
+            started.set()
+            return await control("clear_context")
+
+        async with session_lock_manager.acquire_lock(origin):
+            cleanup = asyncio.create_task(request_cleanup())
+            await started.wait()
+            history += [{"role": "assistant", "content": "清理前完成的回复"}]
+            await manager.update_conversation(origin, cid, history=history)
+            self.assertFalse(cleanup.done())
+            self.assertEqual(json.loads((await manager.get_conversation(origin, cid)).history), history)
+        self.assertEqual(await cleanup, 200)
+        self.assertEqual(json.loads((await manager.get_conversation(origin, cid)).history), [])
+        self.assertEqual(json.loads((await manager.get_conversation(origin, previous.conversation_id)).history),
+                         history[:1])
+        self.assertEqual(await messages.count("test", origin), 1)
+        self.assertGreater(store.stats(scope)["memories"], 0)
+        self.assertEqual(store.stats(scope)["pending"], 1)
+        self.assertNotIn((scope, job["actor"]), self.plugin.memory.focus)
+        self.assertIsNone(store.history_summary(scope, cid))
+        self.assertFalse(store.save_history_state(scope, cid, [], now, now, generation=0))
+        self.assertFalse(store.save_history_summary(scope, cid, 1, "digest", {}, 0, now))
+
+        self.assertEqual(await control("clear_records"), 200)
+        self.assertEqual(await control("clear_records"), 200)
+        self.assertEqual(await messages.count("test", origin), 0)
+        self.assertEqual(await messages.count("test", other_origin), 1)
+        for table in ("episodes", "history_archives"):
+            self.assertIsNone(store.db.execute(f"SELECT 1 FROM {table} WHERE scope=?", (scope,)).fetchone())
+        self.assertGreater(store.stats(scope)["memories"], 0)
+        self.assertEqual(store.stats(scope)["pending"], 0)
+        self.assertFalse(store.capture(pending))
+        self.assertEqual(store.stats(other)["pending"], 1)
+
+        fresh = {**pending, "id": "fresh", "generation": store.scope(scope)["generation"]}
+        self.assertTrue(store.capture(fresh))
+        self.assertEqual(await control("clear_memory"), 200)
+        self.assertEqual(store.stats(scope)["memories"], 0)
+        self.assertEqual(store.stats(scope)["feelings"], 0)
+        self.assertEqual(store.stats(scope)["pending"], 0)
+        self.assertFalse(store.capture(fresh))
+        self.assertIsNotNone(store.db.execute("SELECT 1 FROM episodes WHERE id='fresh'").fetchone())
+        self.assertEqual(store.stats(other)["pending"], 1)
+
+    async def test_webchat_cleanup_checks_session_and_thread_owners(self):
+        database = SQLiteDatabase(str(Path(self.temp.name) / "astrbot.sqlite3"))
+        self.addAsyncCleanup(database.engine.dispose)
+        await database.initialize()
+        session = await database.create_platform_session("owner")
+        thread = await database.create_webchat_thread("owner", session.session_id, 1, "checkpoint", "selected")
+        self.context.get_db = lambda: database
+        messages = self.context.message_history_manager = PlatformMessageHistoryManager(database)
+        stored = {"type": "user", "message": []}
+        await messages.insert("webchat", session.session_id, stored)
+        await messages.insert("webchat_thread", thread.thread_id, stored)
+        await self.plugin.clear_platform_records(f"webchat:FriendMessage:webchat!other!{session.session_id}")
+        await self.plugin.clear_platform_records(f"webchat:FriendMessage:webchat!other!{thread.thread_id}")
+        self.assertEqual(await messages.count("webchat", session.session_id), 1)
+        self.assertEqual(await messages.count("webchat_thread", thread.thread_id), 1)
+        await self.plugin.clear_platform_records(f"webchat:FriendMessage:webchat!owner!{session.session_id}")
+        self.assertEqual(await messages.count("webchat", session.session_id), 0)
+        self.assertEqual(await messages.count("webchat_thread", thread.thread_id), 1)
+        await self.plugin.clear_platform_records(f"webchat:FriendMessage:webchat!owner!{thread.thread_id}")
+        self.assertEqual(await messages.count("webchat_thread", thread.thread_id), 0)
+
+    async def test_companion_cleanup_validates_scope_and_only_clears_selected_peers(self):
+        from astrbot_plugin_self_cognition.cognition import conversation_key
+
+        origin = Event.unified_msg_origin
+        scope = scope_key(origin, "friend")
+        store = self.plugin.store
+        state = store.ensure_scope(scope, origin, "friend")
+        await self.plugin.memory.refresh(scope)
+        play_clear = AsyncMock(return_value="cleared")
+        self.stars["astrbot_plugin_play_together"] = SimpleNamespace(
+            activated=True, star_cls=SimpleNamespace(config={}, companion_clear=play_clear),
+        )
+        self.stars["astrbot_plugin_short_term_mood"] = SimpleNamespace(
+            activated=True, star_cls=SimpleNamespace(config={}, companion_clear=AsyncMock(return_value="busy")),
+        )
+        self.stars["astrbot_plugin_daily_routine"] = SimpleNamespace(
+            activated=True, star_cls=SimpleNamespace(config={}),
+        )
+        self.plugin.companions[origin] = {"play_together": {"last_game": "game"}, "self_amusement": {"idea": "idea"}}
+        job = {"scope": scope, "generation": state["generation"], "source_kind": "companion",
+               "origin": origin, "actor": "self", "name": "我", "reply": ""}
+        for role in ("play_together", "self_amusement"):
+            store.enqueue({**job, "id": role, "human": json.dumps({"source": role})})
+
+        async def request_cleanup(roles, target_origin=origin, username="admin"):
+            async def receive():
+                return {"type": "http.request", "body": json.dumps({
+                    "scope": scope, "origin": target_origin, "plugins": roles,
+                }).encode()}
+
+            req = Request({"type": "http", "method": "POST", "path": "/", "query_string": b"", "headers": []},
+                          receive=receive)
+            with bind_request_context(PluginRequest(req, username=username)):
+                return await self.plugin.page_companion_cleanup()
+
+        self.assertEqual((await request_cleanup(["play_together"], username=None)).status_code, 401)
+        self.assertEqual((await request_cleanup(["play_together"], "wrong")).status_code, 409)
+        play_clear.assert_not_awaited()
+        response = await request_cleanup(["play_together", "short_term_mood", "daily_routine", "play_together"])
+        self.assertEqual([result["status"] for result in json.loads(response.body)["results"]],
+                         ["cleared", "busy", "unavailable"])
+        play_clear.assert_awaited_once_with(origin, persona="friend")
+        self.assertEqual(store.stats(scope)["pending"], 1)
+        self.assertEqual(store.next_job(time.time() + 1)["id"], "self_amusement")
+        self.assertNotIn("play_together", self.plugin.companions[origin])
+        self.assertIn("self_amusement", self.plugin.companions[origin])
+        self.assertEqual(self.plugin.companion_generations[conversation_key(origin), "play_together"], 1)
 
     async def test_view_uses_astrbot_session_names_and_preserves_configured_origins(self):
         friend = Event.unified_msg_origin

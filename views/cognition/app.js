@@ -39,9 +39,14 @@ function empty(container, message) {
     container.replaceChildren(el('p', message, 'empty'));
 }
 
-function confirmDeletion(message) {
+function confirmDeletion(message, title = '确认删除', target = '', items = []) {
     const dialog = $('confirm-action');
+    $('confirm-title').textContent = title;
+    $('confirm-target').textContent = target;
+    $('confirm-target').hidden = !target;
     $('confirm-message').textContent = message;
+    $('confirm-items').replaceChildren(...items.map(item => el('li', item)));
+    $('confirm-items').hidden = !items.length;
     dialog.returnValue = 'cancel';
     dialog.showModal();
     return new Promise(resolve => {
@@ -95,6 +100,7 @@ async function loadScope() {
     (data.all_questions || data.curiosity).forEach(q => $('questions').append(el('div', q.question, 'question')));
     if (!$('questions').children.length) empty($('questions'), '没有待解的问题，也可以安静地陪伴。');
     memoryView = {data, scope};
+    renderCompanionCleanup(data.companion_cleanup || []);
     renderMemories();
     renderExperiences();
     $('character').replaceChildren();
@@ -114,6 +120,25 @@ async function loadScope() {
     if (!$('character').children.length && !$('intentions').children.length) empty($('character'), '自己的喜好、习惯和挂念会随着经历延续。');
     $('scope-details').hidden = false;
 }
+function renderCompanionCleanup(plugins) {
+    const container = $('companion-cleanup-options');
+    const submit = $('companion-cleanup-submit');
+    container.replaceChildren();
+    for (const plugin of plugins) {
+        const row = el('label', undefined, 'companion-option');
+        const check = el('input');
+        check.type = 'checkbox';
+        check.value = plugin.id;
+        const content = el('span');
+        content.append(el('strong', plugin.label), el('small', plugin.description));
+        row.append(check, content);
+        container.append(row);
+    }
+    $('companion-cleanup-empty').hidden = Boolean(plugins.length);
+    submit.hidden = !plugins.length;
+    submit.disabled = true;
+    container.onchange = () => { submit.disabled = !container.querySelector('input:checked'); };
+}
 function renderMemories() {
     if (!memoryView || memoryView.scope !== selected()) return;
     $('memories').replaceChildren();
@@ -132,8 +157,7 @@ function renderMemories() {
                 scope,
                 id: r.id
             });
-            await refresh();
-            notice('已删除该事实及其历史修订。');
+            await refresh('已删除该事实及其历史修订。');
         }));
         node.append(detail, remove);
         $('memories').append(node);
@@ -156,7 +180,7 @@ function renderExperiences() {
     });
     if (!$('experiences').children.length) empty($('experiences'), '聊过一段、一起做过些事，就会慢慢留下完整的经历。');
 }
-async function refresh() {
+async function refresh(successMessage, operationFailed = false) {
     const request = ++overviewRequest;
     ++scopeRequest;
     $('memory').setAttribute('aria-busy', 'true');
@@ -191,7 +215,9 @@ async function refresh() {
         option.value = '';
         $('scope').append(option);
     }
-    if (await loadScope() !== false) notice(data.last_error || '');
+    if (await loadScope() !== false && request === overviewRequest) {
+        notice(successMessage || data.last_error || '', operationFailed);
+    }
 }
 
 function sessionPicker(key, spec, values, sessions) {
@@ -364,17 +390,50 @@ async function saveSettings() {
     notice('配置已保存，后续对话与后台任务使用新设置。');
 }
 document.querySelectorAll('[data-action]').forEach(button => button.onclick = () => action(async () => {
-    const scope = selected();
-    if (!scope) return;
-    const op = button.dataset.action;
-    if (op === 'clear_confirm' && !await confirmDeletion('将永久删除此会话和人格的全部记忆、关系、好感和待解问题。')) return;
-    await bridge.apiPost('control', {
-        scope,
-        action: op
-    });
-    await refresh();
-    notice('操作已完成。');
+    const target = $('scope').selectedOptions[0];
+    const controls = $('maintenance-actions');
+    if (!target?.value || controls.disabled) return;
+    const scope = target.value;
+    const description = button.getAttribute('aria-describedby');
+    controls.disabled = true;
+    try {
+        if (description && !await confirmDeletion(
+            `${$(description).textContent} 此操作无法撤销。`,
+            `确认${button.textContent}`,
+            target.textContent
+        )) return;
+        notice('正在处理，请稍候…');
+        await bridge.apiPost('control', {scope, action: button.dataset.action});
+        await refresh(description ? `已${button.textContent}。` : '操作已完成。');
+    } finally {
+        controls.disabled = false;
+    }
 }));
+$('companion-cleanup-submit').onclick = () => action(async () => {
+    const target = $('scope').selectedOptions[0];
+    const controls = $('maintenance-actions');
+    if (!target?.value || controls.disabled || memoryView?.scope !== target.value) return;
+    const {data, scope} = memoryView;
+    const checked = new Set(
+        Array.from($('companion-cleanup-options').querySelectorAll('input:checked'), input => input.value)
+    );
+    const plugins = data.companion_cleanup.filter(plugin => checked.has(plugin.id));
+    if (!plugins.length) return;
+    controls.disabled = true;
+    try {
+        if (!await confirmDeletion('以下操作无法撤销。', '确认清理联动插件', target.textContent,
+            plugins.map(plugin => `${plugin.label} · ${plugin.description}`))) return;
+        notice('正在清理联动插件，请稍候…');
+        const {results} = await bridge.apiPost('companion_cleanup', {
+            scope, origin: data.companion_cleanup_origin, plugins: plugins.map(plugin => plugin.id)
+        });
+        const statuses = {cleared: '已清理', busy: '正在发送，稍后可重试', unavailable: '当前不可用', failed: '清理失败'};
+        await refresh(results.map(result => `${result.label} · ${statuses[result.status]}`).join('　'),
+            results.some(result => result.status !== 'cleared'));
+    } finally {
+        controls.disabled = false;
+    }
+});
 if (!bridge) {
     notice('请从 AstrBot 插件管理中的可视化视图打开此页。配置也可在插件配置页修改。', true);
 } else {

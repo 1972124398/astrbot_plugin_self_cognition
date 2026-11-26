@@ -11,6 +11,14 @@ import time
 import uuid
 
 ROLES = ("short_term_mood", "play_together", "self_amusement", "codex_bridge", "daily_routine")
+COMPANION_CLEANUP = {
+    "daily_routine": ("日常调查", "所选会话和人格的日常画像、记录、挂念和待整理片段"),
+    "short_term_mood": ("短期共享情绪", "整个会话的时间线、近期情绪笔记和待评估内容"),
+    "self_amusement": ("自娱自乐", "整个会话的相处印象、共同兴趣、念头和近期主动发言记录"),
+    "play_together": ("一起玩", "整个会话的游戏房间、待处理回合和最近游戏记录"),
+    "codex_bridge": ("Codex 桥接", "所示 AstrBot 会话的已结束任务记录、专属播报和本会话的播报投递记录"),
+    "active_sticker": ("主动表情", "所示 AstrBot 会话所有人格的已发表情记录和风格包使用状态"),
+}
 
 
 class CompanionLink:

@@ -8,6 +8,7 @@ import uuid
 import weakref
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from astrbot.api import AstrBotConfig, logger
@@ -17,6 +18,7 @@ from astrbot.api.provider import ProviderRequest
 from astrbot.api.star import Context, Star, StarTools
 from astrbot.core.agent.message import TextPart
 from astrbot.core.message.message_event_result import MessageChain, ResultContentType
+from astrbot.core.utils.session_lock import session_lock_manager
 
 from .cognition import (
     CONTEXT_FRAME,
@@ -33,7 +35,7 @@ from .cognition import (
     scope_key,
     text,
 )
-from .interop import CompanionLink
+from .interop import COMPANION_CLEANUP, CompanionLink
 from .store import Store
 from .memory import Memory
 from .history import HistoryCompactor
@@ -41,6 +43,10 @@ from .followups import POLICY, blocked
 
 NAME = "astrbot_plugin_self_cognition"
 TURN = NAME + ".turn"
+
+
+class ContextPersonaChanged(Exception):
+    pass
 
 
 class ObservedGroup(filter.CustomFilter):
@@ -83,6 +89,8 @@ class SelfCognition(Star):
         self.frontend = {}
         self.initiative_task = None
         self.companions = {}
+        self.clearing_companions = set()
+        self.companion_generations = {}
         self.initiative_wait = {}
         self.initiative_considered = {}
         self.analysis_independent = False
@@ -90,6 +98,7 @@ class SelfCognition(Star):
         self.provider_cache = {}
         self.wake = asyncio.Event()
         self.settings_lock = asyncio.Lock()
+        self.control_lock = asyncio.Lock()
         self.last_error = ""
         self.schema = json.loads((Path(__file__).parent / "_conf_schema.json").read_text(encoding="utf-8"))
         # Views are optional: older supported AstrBot versions still have schema UI.
@@ -107,6 +116,7 @@ class SelfCognition(Star):
                 ("settings", "POST", self.save_settings),
                 ("forget", "POST", self.page_forget),
                 ("control", "POST", self.page_control),
+                ("companion_cleanup", "POST", self.page_companion_cleanup),
             ):
                 context.register_web_api(f"/{NAME}/{endpoint}", handler, [method], "自主认知 " + endpoint)
 
@@ -181,7 +191,8 @@ class SelfCognition(Star):
         # The mood plugin injects its live state itself. Its polled snapshot is
         # stale by definition and must not become a second mood or a lasting trait.
         return {role: value for role, value in self.companions.get(origin, {}).items()
-                if role != "short_term_mood" and self.link.peer(role, origin) is not None}
+                if role != "short_term_mood" and self.link.peer(role, origin) is not None
+                and (conversation_key(origin), role) not in self.clearing_companions}
 
     async def initialize(self):
         await self.memory.load()
@@ -199,6 +210,9 @@ class SelfCognition(Star):
         self.wake.set()
 
     def enqueue(self, job, activity_only=False):
+        if role := job.get("companion_role"):
+            key = (conversation_key(job["origin"]), role)
+            job = {**job, "companion_generation": self.companion_generations.get(key, 0)}
         self.capture_queue.put_nowait((copy.deepcopy(job), activity_only))
         self.ensure_worker()
 
@@ -272,6 +286,10 @@ class SelfCognition(Star):
         while True:
             job, activity_only = await self.capture_queue.get()
             try:
+                if (role := job.get("companion_role")) and job["companion_generation"] != self.companion_generations.get(
+                    (conversation_key(job["origin"]), role), 0
+                ):
+                    continue
                 await self.memory.call(self.store.capture, job, activity_only, int(self.n("queue_limit", 256, 8, 4096)))
                 state = await self.memory.call(self.store.scope, job["scope"])
                 if state:
@@ -427,7 +445,7 @@ class SelfCognition(Star):
     def observe_snapshots(self, state, snapshots, persona=""):
         # Snapshot evidence is explicitly attributed to a plugin, never the human.
         for role in ("play_together", "self_amusement", "codex_bridge"):
-            if self.link.connected(role):
+            if self.link.connected(role) or (conversation_key(state["origin"]), role) in self.clearing_companions:
                 continue
             data = snapshots.get(role, {})
             if role == "play_together":
@@ -454,6 +472,7 @@ class SelfCognition(Star):
                     "reply": "",
                     "persona": persona or state.get("persona_prompt", ""),
                     "source_kind": "companion",
+                    "companion_role": role,
                     "persona_id": state["persona"],
                     "provider_id": text(self.config.get("analysis_provider_id"), 200),
                     "captured": time.time(),
@@ -472,6 +491,8 @@ class SelfCognition(Star):
         ):
             return
         if self.link.peer(source, origin) is None:
+            return
+        if (conversation_key(origin), source) in self.clearing_companions:
             return
         states = [
             s
@@ -517,6 +538,7 @@ class SelfCognition(Star):
                 "human": evidence,
                 "reply": "",
                 "source_kind": "companion",
+                "companion_role": source,
                 "companion_kind": kind,
                 "own_utterance": text(data.get("text"), 4000) if kind == "initiative" else "",
                 "provider_id": "",
@@ -792,6 +814,8 @@ class SelfCognition(Star):
             await asyncio.sleep(15)
 
     async def sync_daily_memory(self, state):
+        if (conversation_key(state["origin"]), "daily_routine") in self.clearing_companions:
+            return
         peer = self.link.peer("daily_routine", state["origin"])
         read = getattr(peer, "companion_memory", None)
         if not read:
@@ -929,21 +953,98 @@ class SelfCognition(Star):
         yield event.plain_result("此会话的主动提问已" + ("允许。" if mode == "on" else "关闭。"))
 
     async def do_control(self, scope, action):
-        state = self.memory.states.get(scope)
-        if state:
-            await self.memory.call(self.store.ensure_scope, scope, state["origin"], state["persona"])
-        if action in {"pause", "resume"}:
-            await self.memory.call(self.store.pause, scope, action == "pause")
-        elif action == "clear_confirm":
-            await self.memory.call(self.store.clear, scope)
-        elif action == "retry":
-            await self.memory.call(self.store.retry_failed, scope)
-            self.ensure_worker()
-        elif action in {"contact_on", "contact_off"}:
-            await self.memory.call(self.store.contact, scope, action == "contact_on")
-        else:
-            raise ValueError("unknown action")
-        await self.memory.refresh(scope)
+        async with self.control_lock:
+            state = await self.memory.call(self.store.scope, scope)
+            if not state and (state := self.memory.states.get(scope)):
+                state = await self.memory.call(self.store.ensure_scope, scope, state["origin"], state["persona"])
+            if not state:
+                raise ValueError("unknown scope")
+            if action in {"clear_context", "clear_records"}:
+                await self.clear_chat_data(state, action)
+                return
+            if action in {"pause", "resume"}:
+                await self.memory.call(self.store.pause, scope, action == "pause")
+            elif action == "clear_confirm":
+                await self.memory.call(self.store.clear, scope)
+                self.history.reset(scope)
+            elif action == "clear_memory":
+                await self.memory.call(self.store.clear_memory, scope)
+            elif action == "retry":
+                await self.memory.call(self.store.retry_failed, scope)
+                self.ensure_worker()
+            elif action in {"contact_on", "contact_off"}:
+                await self.memory.call(self.store.contact, scope, action == "contact_on")
+            else:
+                raise ValueError("unknown action")
+            if action in {"clear_memory", "clear_confirm"}:
+                self.reset_focus(scope)
+                self.initiative_wait.pop(scope, None)
+                self.initiative_considered.pop(scope, None)
+            await self.memory.refresh(scope)
+
+    def reset_focus(self, scope):
+        for key in list(self.memory.focus):
+            if key[0] == scope:
+                self.memory.focus.pop(key)
+
+    async def clear_chat_data(self, state, action):
+        scope, origin = state["id"], state["origin"]
+        # Serialize with AstrBot's normal built-in agent history writeback.
+        async with session_lock_manager.acquire_lock(origin):
+            if action == "clear_context":
+                await self.clear_current_conversation(state)
+                if ":GroupMessage:" in origin:
+                    builtin = self.context.get_registered_star("astrbot")
+                    group_context = getattr(getattr(builtin, "star_cls", None), "group_chat_context", None)
+                    if group_context:
+                        await group_context.remove_session(SimpleNamespace(unified_msg_origin=origin))
+                await self.memory.call(self.store.clear_context, scope)
+            else:
+                await self.clear_platform_records(origin)
+                await self.memory.call(self.store.clear_records, scope)
+            self.reset_focus(scope)
+            self.history.reset(scope)
+            await self.memory.refresh(scope)
+
+    async def clear_current_conversation(self, state):
+        origin = state["origin"]
+        manager = self.context.conversation_manager
+        cid = await manager.get_curr_conversation_id(origin)
+        conversation = await manager.get_conversation(origin, cid) if cid else None
+        if not conversation:
+            return
+        if conversation.user_id != origin:
+            raise ContextPersonaChanged("AstrBot 当前对话和所选会话不一致。")
+        platform_id = origin.split(":", 1)[0]
+        platform = self.context.get_platform_inst(platform_id)
+        persona_id, _, _, _ = await self.context.persona_manager.resolve_selected_persona(
+            umo=origin,
+            conversation_persona_id=conversation.persona_id,
+            platform_name=platform.meta().name if platform else platform_id,
+            provider_settings=self.context.get_config(umo=origin).get("provider_settings", {}),
+        )
+        if (text(persona_id, 300) or "default") != state["persona"]:
+            raise ContextPersonaChanged("AstrBot 当前使用了其他人格，请在面板选择正在使用的人格后重试。")
+        await manager.update_conversation(origin, cid, history=[])
+
+    async def clear_platform_records(self, origin):
+        platform_id, _, session_id = origin.split(":", 2)
+        user_id = origin  # AstrBot stores external group messages with the full UMO.
+        if platform_id == "webchat":
+            creator, separator, user_id = session_id.removeprefix("webchat!").rpartition("!")
+            if not separator:
+                raise ValueError("invalid WebChat session")
+            db = self.context.get_db()
+            session = await db.get_platform_session_by_id(user_id)
+            if not session or session.creator != creator or session.platform_id != platform_id:
+                thread = await db.get_webchat_thread_by_id(user_id)
+                if not thread or thread.creator != creator:
+                    return
+                platform_id = "webchat_thread"
+        # The native SQLite API deletes rows newer than this many seconds ago.
+        await self.context.message_history_manager.delete(
+            platform_id=platform_id, user_id=user_id, offset_sec=int(time.time()) + 86400,
+        )
 
     async def page_overview(self):
         from astrbot.api.web import error_response, json_response, request
@@ -970,10 +1071,71 @@ class SelfCognition(Star):
         if not request.username:
             return error_response("需要登录", status_code=401)
         scope = request.query.get("scope", "")
-        if not await self.memory.call(self.store.scope, scope):
+        state = await self.memory.call(self.store.scope, scope)
+        if not state:
             return error_response("会话不存在", status_code=404)
         data = await self.memory.call(self.store.dashboard, scope, request.query.get("query", ""))
+        data["companion_cleanup_origin"] = state["origin"]
+        data["companion_cleanup"] = [
+            {"id": role, "label": label, "description": description}
+            for role, (label, description) in COMPANION_CLEANUP.items()
+            if callable(getattr(self.link.peer(role, state["origin"]), "companion_clear", None))
+        ]
         return json_response(data)
+
+    async def page_companion_cleanup(self):
+        from astrbot.api.web import error_response, json_response, request
+
+        if not request.username:
+            return error_response("需要登录", status_code=401)
+        payload = await request.json(default={})
+        if not isinstance(payload, dict) or not isinstance(payload.get("scope"), str):
+            return error_response("请求无效")
+        roles = payload.get("plugins")
+        if not isinstance(roles, list) or not roles or len(roles) > len(COMPANION_CLEANUP) or any(
+            not isinstance(role, str) or role not in COMPANION_CLEANUP for role in roles
+        ):
+            return error_response("联动插件选择无效")
+        async with self.control_lock:
+            state = await self.memory.call(self.store.scope, payload["scope"])
+            if not state:
+                return error_response("会话不存在", status_code=404)
+            if payload.get("origin") != state["origin"]:
+                return error_response("会话来源已变化，请刷新面板后重试。", status_code=409)
+            results = []
+            for role in dict.fromkeys(roles):
+                status = await self.clear_companion(state, role)
+                results.append({"id": role, "label": COMPANION_CLEANUP[role][0], "status": status})
+        return json_response({"results": results})
+
+    async def clear_companion(self, state, role):
+        origin, scope = state["origin"], state["id"]
+        clear = getattr(self.link.peer(role, origin), "companion_clear", None)
+        if not callable(clear):
+            return "unavailable"
+        key = (conversation_key(origin), role)
+        self.clearing_companions.add(key)
+        try:
+            status = await clear(origin, persona=state["persona"])
+            if status != "cleared":
+                return status if status in ("busy", "unavailable") else "failed"
+            self.companion_generations[key] = self.companion_generations.get(key, 0) + 1
+            for umo, snapshots in self.companions.items():
+                if conversation_key(umo) == key[0]:
+                    snapshots.pop(role, None)
+            scopes = {scope, *(item["id"] for item in self.memory.states.values()
+                               if conversation_key(item["origin"]) == key[0])}
+            if role == "daily_routine":
+                await self.memory.call(self.store.clear_companion_cache, [scope], role)
+                await self.memory.refresh(scope)
+            elif role in {"play_together", "self_amusement"}:
+                await self.memory.call(self.store.clear_companion_cache, scopes, role)
+            return "cleared"
+        except Exception:
+            logger.exception("联动清理失败 (%s)", role)
+            return "failed"
+        finally:
+            self.clearing_companions.discard(key)
 
     async def page_settings(self):
         from astrbot.api.web import error_response, json_response, request
@@ -1078,10 +1240,19 @@ class SelfCognition(Star):
             or not await self.memory.call(self.store.scope, payload["scope"])
         ):
             return error_response("会话不存在")
-        try:
-            await self.do_control(payload["scope"], payload.get("action"))
-        except (ValueError, TypeError):
+        action = payload.get("action")
+        if not isinstance(action, str) or action not in {
+            "pause", "resume", "retry", "contact_on", "contact_off",
+            "clear_confirm", "clear_memory", "clear_context", "clear_records",
+        }:
             return error_response("操作无效")
+        try:
+            await self.do_control(payload["scope"], action)
+        except ContextPersonaChanged as error:
+            return error_response(str(error), status_code=409)
+        except Exception:
+            logger.exception("自主认知管理操作失败 (%s)", action)
+            return error_response("操作未完成，可能已有部分数据清理成功。请重试或查看 AstrBot 日志。", status_code=500)
         return json_response({"saved": True})
 
     async def terminate(self):

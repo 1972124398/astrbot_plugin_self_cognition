@@ -179,7 +179,66 @@ const scope = id => ({id, origin: `test:FriendMessage:${id}`, display_name: id =
         await page.locator('#refresh').click();
         assert.equal(await page.locator('#scope-empty').isVisible(), true);
         assert.deepEqual(await page.evaluate(() => window.writes), []);
+        await page.evaluate(scopes => { window.testScopes = scopes; }, [scope('a'), scope('b')]);
+        await page.locator('#refresh').click();
+        await page.locator('#scope-details').waitFor({state: 'visible'});
+        await page.locator('.maintenance > summary').click();
+        const dialog = page.getByRole('dialog');
+        await page.getByRole('button', {name: '清空长期记忆', exact: true}).click();
+        assert.match(await dialog.textContent(), /林夏的私聊.*日常伙伴/s);
+        await dialog.getByRole('button', {name: '取消'}).click();
+        assert.deepEqual(await page.evaluate(() => window.writes), []);
+
+        for (const [label, operation, scope] of [
+            ['清空长期记忆', 'clear_memory', 'a'],
+            ['清空短期上下文', 'clear_context', 'b'],
+            ['清空聊天记录', 'clear_records', 'b']
+        ]) {
+            await page.selectOption('#scope', scope);
+            await page.getByRole('button', {name: label, exact: true}).click();
+            assert.match(await dialog.textContent(), /无法撤销/);
+            await dialog.getByRole('button', {name: '确认删除'}).click();
+            await page.waitForFunction(label => document.getElementById('notice').textContent.includes(`已${label}`), label);
+        }
+        assert.deepEqual(await page.evaluate(() => window.writes), [
+            ['control', {scope: 'a', action: 'clear_memory'}],
+            ['control', {scope: 'b', action: 'clear_context'}],
+            ['control', {scope: 'b', action: 'clear_records'}]
+        ]);
+
+        await page.locator('.companion-cleanup > summary').click();
+        assert.equal(await page.locator('#companion-cleanup-empty').isVisible(), true);
+        await page.evaluate(() => {
+            window.testData.companion_cleanup = [
+                {id: 'daily_routine', label: '日常调查', description: '所选人格的日常画像'},
+                {id: 'play_together', label: '一起玩', description: '整个会话的游戏记录'}
+            ];
+            window.testData.companion_cleanup_origin = 'test:FriendMessage:a';
+            const post = window.AstrBotPluginView.apiPost;
+            window.AstrBotPluginView.apiPost = async (...args) => {
+                await post(...args);
+                return {results: [{label: '日常调查', status: 'cleared'}, {label: '一起玩', status: 'busy'}]};
+            };
+        });
+        await page.selectOption('#scope', 'a');
+        const clearPeers = page.locator('#companion-cleanup-submit');
+        await clearPeers.waitFor({state: 'visible'});
+        assert.equal(await clearPeers.isDisabled(), true);
+        await page.getByRole('checkbox', {name: /日常调查/}).check();
+        await page.getByRole('checkbox', {name: /一起玩/}).check();
+        await clearPeers.click();
+        assert.match(await dialog.textContent(), /林夏的私聊.*日常调查.*一起玩/s);
+        await dialog.getByRole('button', {name: '取消'}).click();
+        assert.equal(await page.evaluate(() => window.writes.length), 3);
+        await clearPeers.click();
+        await dialog.getByRole('button', {name: '确认删除'}).click();
+        await page.waitForFunction(() => document.getElementById('notice').textContent.includes('一起玩 · 正在发送'));
+        assert.match(await page.locator('#notice').textContent(), /日常调查 · 已清理/);
+        assert.deepEqual(await page.evaluate(() => window.writes.at(-1)), ['companion_cleanup', {
+            scope: 'a', origin: 'test:FriendMessage:a', plugins: ['daily_routine', 'play_together']
+        }]);
+        assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true);
         assert.deepEqual(errors, []);
-        console.log('PASS: loading races, failure recovery, memory filtering, more experiences, pinned focus, graph, all people, aliases, evidence, status filters, focus, keyboard, scope isolation, dense pagination, mobile, settings, XSS and no writes');
+        console.log('PASS: loading races, failure recovery, memory filtering, graph, scope isolation, mobile, settings, XSS and confirmed cleanup');
     } finally { await browser.close(); server.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

@@ -647,7 +647,19 @@ html { scroll-behavior: smooth; scroll-padding-top: 20px; }
 #experiences-more { margin-top: 12px; width: 100%; font-size: 12px; }
 .maintenance { border: 1px solid #e0e5db; border-radius: 12px; background: #f4f5ef; padding: 16px 20px; margin-bottom: 24px; }
 .maintenance > summary { font-size: 12px; color: #7c8775; cursor: pointer; }
+.maintenance fieldset { border: 0; padding: 0; margin: 12px 0 0; min-width: 0; }
 .maintenance .actions { margin-bottom: 0; }
+.cleanup-options { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 210px), 1fr)); gap: 16px; margin-top: 14px; padding-top: 14px; border-top: 1px solid #e0e5db; }
+.cleanup-options p { margin: 8px 0 0; font-size: 13px; color: #566451; line-height: 1.6; }
+.companion-cleanup { margin-top: 16px; padding-top: 14px; border-top: 1px solid #e0e5db; }
+.companion-cleanup summary { cursor: pointer; }
+.companion-cleanup > p { color: #566451; font-size: 13px; }
+#companion-cleanup-options { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 250px), 1fr)); gap: 10px; margin: 12px 0; }
+.companion-option { display: flex; align-items: flex-start; gap: 9px; padding: 10px; border: 1px solid #e0e5db; border-radius: 8px; cursor: pointer; }
+.companion-option input { flex: none; margin-top: 4px; }
+.companion-option small { display: block; color: #566451; margin-top: 3px; line-height: 1.5; }
+#confirm-items { padding-inline-start: 1.4em; }
+#confirm-items li + li { margin-top: 6px; }
 #memory-card, #world-card, #experience-card, #life-card { scroll-margin-top: 70px; }
 @media (max-width: 720px) {
     .section-nav { gap: 6px; margin-bottom: 16px; }

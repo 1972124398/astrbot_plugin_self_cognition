@@ -165,6 +165,14 @@ class HistoryCompactor:
         self.retry_at = {}
         self.tasks = {}
 
+    def reset(self, scope):
+        for key, task in list(self.tasks.items()):
+            if key[0] == scope:
+                task.cancel()
+        for key in list(self.retry_at):
+            if key[0] == scope:
+                self.retry_at.pop(key)
+
     async def prepare(self, event, request, scope, state):
         plugin = self.plugin
         if not plugin.config.get("history_cleanup_enabled", True) or request.contexts is None:
@@ -188,6 +196,7 @@ class HistoryCompactor:
         plugin = self.plugin
         now = time.time()
         key = (scope, cid)
+        generation = (state or {}).get("history_generation", 0)
         self.retry_at = {key: until for key, until in self.retry_at.items() if until > now}
         original = copy.deepcopy(request.contexts)
         # System messages are owned by AstrBot/persona/plugins, never summarized.
@@ -211,11 +220,11 @@ class HistoryCompactor:
             offset = max(0, ready["count"] - (2 if previous else 0))
             # A ready prefix may have waited overnight. Its tail has aged too.
             if any(idle or now - at >= age for _, at in timeline[offset:]):
-                if (ready["generation"] == (state or {}).get("generation", 0)
+                if (ready["generation"] == generation
                         and ready["count"] <= len(history) and digest(history[:ready["count"]]) == ready["fingerprint"]):
                     stale_summary = ready["summary"]
                 ready = None
-        if ready and ready["generation"] == (state or {}).get("generation", 0):
+        if ready and ready["generation"] == generation:
             count = ready["count"]
             if count <= len(history) and digest(history[:count]) == ready["fingerprint"]:
                 summary = ready["summary"]
@@ -228,9 +237,11 @@ class HistoryCompactor:
                 ):
                     return
                 offset = count - (2 if previous else 0)
-                await plugin.memory.call(
-                    plugin.store.save_history_state, scope, cid, timeline[offset:], now if is_human else human_at, now
-                )
+                if not await plugin.memory.call(
+                    plugin.store.save_history_state, scope, cid, timeline[offset:], now if is_human else human_at,
+                    now, generation=generation,
+                ):
+                    return
                 request.contexts = replacement
                 from astrbot.api import logger
 
@@ -255,7 +266,7 @@ class HistoryCompactor:
             ):
                 cut += 1
         expired = bool(previous and previous.get("threads") and previous.get("expires_at", 0) <= now)
-        await plugin.memory.call(
+        if not await plugin.memory.call(
             plugin.store.save_history_state,
             scope,
             cid,
@@ -263,7 +274,9 @@ class HistoryCompactor:
             now if is_human else human_at,
             now,
             bool(idle and grouped),
-        )
+            generation=generation,
+        ):
+            return
         if not cut and not expired:
             return
         if plugin.closing or not plugin.allowed(str(event.unified_msg_origin)) or key in self.retry_at:
@@ -271,7 +284,6 @@ class HistoryCompactor:
         running = self.tasks.get(key)
         if running is not None and not running.done():
             return
-        generation = (state or {}).get("generation", 0)
         removed = [m for turn, _ in grouped[:cut] for m in turn]
         old_summary = copy.deepcopy(previous or stale_summary or {"facts": [], "threads": []})
         if old_summary.get("expires_at", 0) <= now:
@@ -295,8 +307,11 @@ class HistoryCompactor:
                                                 replacement, now, generation):
                     return
                 kept_timeline = timeline[len(removed):]
-                await plugin.memory.call(plugin.store.save_history_state, scope, cid, kept_timeline,
-                                         now if is_human else human_at, now)
+                if not await plugin.memory.call(
+                    plugin.store.save_history_state, scope, cid, kept_timeline, now if is_human else human_at,
+                    now, generation=generation,
+                ):
+                    return
                 request.contexts = replacement
                 count, fingerprint = len(pair), digest(pair)
             task = asyncio.create_task(
