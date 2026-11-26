@@ -42,8 +42,8 @@ class NaturalContextTests(unittest.TestCase):
         self.assertNotIn("最近在琢磨一首钢琴曲", lunch)
         self.assertIn("钢琴曲", lunch)  # One brief interest stays available without retelling the history.
         self.assertNotIn("新感受", lunch)
-        self.assertIn("已经熟悉", lunch)
-        self.assertIn("直接说自己的想法", lunch)
+        self.assertNotIn("已经熟悉", lunch)
+        self.assertNotIn("直接说自己的想法", lunch)
         piano = "\n".join(living_context(cache.recall("room", "alice", "最近那首钢琴曲呢", conversation=True), "Alice"))
         self.assertIn("钢琴", piano)
         self.assertEqual(cache.recall("room", "alice")["portrait"]["shared_story"], "一起聊过钢琴。")

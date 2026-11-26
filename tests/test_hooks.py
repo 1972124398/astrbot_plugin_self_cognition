@@ -100,10 +100,10 @@ class Hooks(unittest.IsolatedAsyncioTestCase):
     async def test_frontend_no_model_call_and_temp_context(self):
         event, request = await self.prepare()
         self.context.llm_generate.assert_not_awaited()
-        self.assertTrue(request.extra_user_content_parts[0].text.startswith("<self_cognition>"))
+        self.assertTrue(any(p.text.startswith("<self_cognition>") for p in request.extra_user_content_parts))
         self.assertEqual(request.contexts, [])
         await self.plugin.prepare(event, request)
-        self.assertEqual(len(request.extra_user_content_parts), 1)
+        self.assertEqual(len(request.extra_user_content_parts), 2)
 
     async def test_delivered_hook_is_idempotent_and_preserves_persona(self):
         event, _ = await self.exchange()
@@ -202,8 +202,9 @@ class Hooks(unittest.IsolatedAsyncioTestCase):
             patch.object(self.plugin.store, "ensure_scope", side_effect=AssertionError("front must not write SQLite")),
         ):
             _, request = await self.prepare(event)
-            hint = request.extra_user_content_parts[0].text
-        self.assertIn("熟悉以后能放松地开玩笑", hint)
+            hint = "\n".join(p.text for p in request.extra_user_content_parts)
+        self.assertIn("一起聊过练琴", hint)
+        self.assertNotIn("熟悉以后能放松地开玩笑", hint)
         self.assertNotIn("我也有想安静陪着的时候", hint)
         self.assertNotIn('"affection"', hint)
         self.assertNotIn('"confidence"', hint)

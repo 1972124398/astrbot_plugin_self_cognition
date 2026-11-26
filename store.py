@@ -15,9 +15,11 @@ from .cognition import digest, retrieve, relevant_relations
 
 
 from .life import LifeStore
+from .followups import FollowupStore
+from .followups import blocked
 
 
-class Store(LifeStore):
+class Store(LifeStore, FollowupStore):
     def __init__(self, path):
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -112,6 +114,8 @@ class Store(LifeStore):
                 self.db.execute("DROP TABLE relations_v2")
         self.db.commit()
         self.initialize_life()
+        self.initialize_followups()
+        self.db.commit()
 
     def ensure_scope(self, scope, origin, persona):
         with self.db:
@@ -324,7 +328,7 @@ class Store(LifeStore):
         if accepted:
             for question in job.get("questions", []):
                 if question["question"] in job["reply"]:
-                    self.mark_question(job["scope"], question["id"], time.time())
+                    self.mark_question(job["scope"], question["id"], time.time(), turn_id=job["id"])
         return accepted
 
     def failed(self, job, now):
@@ -481,6 +485,7 @@ class Store(LifeStore):
                     who = entity(person["actor"])
                     self.save_person(job, dict(person, actor=who), now)
             self.save_life(job, result, now, entity)
+            self.save_question_updates(job, result.get("question_updates", []), now, entity)
             if result.get("self_reflection"):
                 self.save_portrait(scope, "self", {"impression": result["self_reflection"]}, now)
             self.db.executemany(
@@ -516,6 +521,7 @@ class Store(LifeStore):
             for r in self.db.execute("SELECT * FROM portraits WHERE scope=?", (scope,))
         }
         data.update(self.life_view(scope))
+        data["question_threads"] = self.question_threads(scope)
         data["daily_memory"] = {r["actor"]: json.loads(r["payload"]) for r in self.db.execute("SELECT * FROM daily_memory WHERE scope=?", (scope,))}
         return self.scope(scope), Memory.index(data)
 
@@ -617,12 +623,17 @@ class Store(LifeStore):
             "curiosity": questions,
         }
 
-    def mark_question(self, scope, question_id, now, proactive=False, message=""):
+    def mark_question(self, scope, question_id, now, proactive=False, message="", turn_id=""):
         with self.db:
-            self.db.execute(
+            changed = self.db.execute(
                 "UPDATE questions SET status=? WHERE scope=? AND id=? AND status='pending'",
                 ("sent" if proactive else "offered", scope, question_id),
-            )
+            ).rowcount
+            if changed:
+                question = self.db.execute("SELECT actor,question FROM questions WHERE scope=? AND id=?",
+                                           (scope, question_id)).fetchone()
+                if question:
+                    self.record_question_sent(scope, question["actor"], question["question"], now, turn_id)
             if proactive:
                 self.db.execute("UPDATE scopes SET last_sent=? WHERE id=?", (now, scope))
                 row = self.db.execute(
@@ -655,7 +666,7 @@ class Store(LifeStore):
             self.db.execute("DELETE FROM episodes WHERE scope=?", (scope,))
             self.db.execute("DELETE FROM portraits WHERE scope=?", (scope,))
             self.db.execute("DELETE FROM entity_aliases WHERE scope=?", (scope,))
-            for table in ("experiences", "characters", "intentions"):
+            for table in ("experiences", "characters", "intentions", "question_threads", "question_receipts"):
                 self.db.execute(f"DELETE FROM {table} WHERE scope=?", (scope,))
         return True
 
@@ -676,6 +687,8 @@ class Store(LifeStore):
                 "experiences",
                 "characters",
                 "intentions",
+                "question_threads",
+                "question_receipts",
                 "entity_aliases",
                 "relation_opinions",
                 "history_states",
@@ -697,11 +710,13 @@ class Store(LifeStore):
             return None
         if not allow_questions:
             return None
-        row = self.db.execute(
-            "SELECT * FROM questions WHERE scope=? AND status='pending' AND created>? ORDER BY created DESC LIMIT 1",
+        rows = self.db.execute(
+            "SELECT * FROM questions WHERE scope=? AND status='pending' AND created>? ORDER BY created DESC LIMIT 50",
             (scope, now - 30 * 86400),
-        ).fetchone()
-        return dict(row) if row else None
+        ).fetchall()
+        threads = self.question_threads(scope)
+        return next((dict(row) for row in rows
+                     if not blocked(row["question"], [t for t in threads if t["actor"] in {row["actor"], "self"}])), None)
 
     def remember_snapshot_receipts(self, scope):
         # Retain only content-free fingerprints of externally owned snapshots so a

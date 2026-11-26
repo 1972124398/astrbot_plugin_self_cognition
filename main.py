@@ -37,6 +37,7 @@ from .interop import CompanionLink
 from .store import Store
 from .memory import Memory
 from .history import HistoryCompactor
+from .followups import POLICY, blocked
 
 NAME = "astrbot_plugin_self_cognition"
 TURN = NAME + ".turn"
@@ -310,6 +311,12 @@ class SelfCognition(Star):
         # Task reports and autonomous messages are not new human experiences.
         if event_kind(event) != "dialogue":
             return
+        if not any(str(getattr(p, "text", "")).startswith("<question_policy>")
+                   for p in (request.extra_user_content_parts or [])):
+            if request.extra_user_content_parts is None:
+                request.extra_user_content_parts = []
+            request.extra_user_content_parts.append(TextPart(text="<question_policy>\n" + POLICY
+                                                            + "\n</question_policy>").mark_as_temp())
         existing = event.get_extra(TURN)
         if isinstance(existing, dict):
             return
@@ -359,6 +366,11 @@ class SelfCognition(Star):
         self.initiative_considered.pop(scope, None)
         self.enqueue(job, activity_only=True)
         recalled = self.memory.recall(scope, actor, human, int(self.n("recall_limit", 6, 1, 30)), conversation=True)
+        states = recalled.get("question_threads", [])[:20]
+        if states:
+            request.extra_user_content_parts.append(TextPart(
+                text="<question_threads>\n" + json.dumps(states, ensure_ascii=False) + "\n</question_threads>"
+            ).mark_as_temp())
         job["questions"] = recalled["curiosity"]
         event.set_extra(TURN, job)
         if not self.config.get("curiosity_enabled", True):
@@ -538,6 +550,9 @@ class SelfCognition(Star):
             payload["persona"] = state.get("persona_prompt", job.get("persona", ""))
         prompt_used = payload["persona"]
         payload["known"] = recalled
+        # Reflection must see closed topics too; selective recall is for answers,
+        # not permission to rename a previously dropped question.
+        payload["known"]["question_threads"] = self.memory.views.get(job["scope"], {}).get("question_threads", [])
         payload["mentioned_users"] = job.get("mentioned_users", [])
         payload["speakers"] = job.get("speakers", [{"id": job["actor"], "name": job["name"]}])
         payload["people_known"] = {
@@ -736,6 +751,9 @@ class SelfCognition(Star):
                 or self.in_quiet_hours()
             ):
                 return
+            threads = await self.memory.call(self.store.question_threads, state["id"])
+            if blocked(question.get("topic", question["question"]), threads):
+                return
             async with asyncio.timeout(30):
                 sent = await self.context.send_message(origin, MessageChain(chain=[Plain(message)]))
             if sent:
@@ -835,6 +853,8 @@ class SelfCognition(Star):
             key: (value[:300] if isinstance(value, str) else value[:3]) for key, value in recalled["character"].items()
         }
         return {
+            "question_policy": POLICY,
+            "question_threads": recalled.get("question_threads", [])[:20],
             "guidance": "这是长期相处背景，相关时才取用，不需要找旧话题续聊；历史感受不代表当前心情，当前心境以短期情绪插件状态为准。",
             "character": character,
             "recent_own_messages": [message[:500] for message in spoken]

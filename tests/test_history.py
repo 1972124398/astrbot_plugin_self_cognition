@@ -115,6 +115,30 @@ class HistoryTests(unittest.IsolatedAsyncioTestCase):
         await self.prepare(request)
         self.assertEqual(request.contexts[2:], fresh)
 
+    async def test_ready_prefix_does_not_keep_overnight_raw_tail(self):
+        request = self.request()
+        await self.prepare(request)
+        await self.finish()
+        saved = self.plugin.store.history_state(self.scope, request.conversation.cid)
+        old = [[fingerprint, time.time() - 40000] for fingerprint, _ in saved["timeline"]]
+        self.plugin.store.save_history_state(self.scope, request.conversation.cid, old,
+                                            time.time() - 40000, time.time())
+        original = copy.deepcopy(request.contexts)
+        await self.prepare(request)
+        self.assertNotIn("回复-7", encoded(request.contexts))
+        self.assertEqual(len(request.contexts), 2)
+        self.assertIn("Alice 喜欢无糖茶", encoded(request.contexts))
+        archived = self.plugin.store.db.execute("SELECT original FROM history_archives ORDER BY id DESC").fetchone()
+        self.assertEqual(json.loads(archived[0]), original)
+        await self.finish()
+        await self.prepare(request)
+        # Later messages append to the replacement, preserving its summary
+        # anchor without resurrecting an expired raw tail.
+        request.contexts += turns(1, 5)
+        await self.prepare(request)
+        self.assertIn(MARKER, encoded(request.contexts))
+        self.assertNotIn("回复-7", encoded(request.contexts))
+
     async def test_tool_call_results_remain_in_same_round(self):
         history = turns(6)
         recent = [
@@ -278,6 +302,10 @@ class HistoryTests(unittest.IsolatedAsyncioTestCase):
 
 
 class SummaryRules(unittest.TestCase):
+    def test_saved_plugin_drafts_are_removed_from_summarizer_evidence(self):
+        data = [{"role": "user", "content": "早上好\n[reply_merge:thought:abcd1234]\n旧的催问草稿\n[/reply_merge:thought:abcd1234]"}]
+        self.assertEqual(project_history(data), [{"role": "user", "content": "早上好"}])
+
     def test_schema_budget_dedup_and_expiry(self):
         result = parse_summary('{"facts":["喜欢茶","喜欢茶"],"threads":["临时话题"]}', 200, 100, 50)
         self.assertEqual(result["facts"], ["喜欢茶"])

@@ -9,6 +9,7 @@ import json
 
 from .cognition import retrieve, tokens, relevant_relations
 from .daily_memory import linked_rows
+from .followups import blocked
 
 
 def current_thought(item, now):
@@ -85,6 +86,7 @@ class Memory:
             # lifetime indefinitely just by saying "后来呢" again.
             self.focus[scope, actor] = (query[-600:], time.monotonic())
         terms = recall_terms(effective)
+        threads = [dict(row) for row in view.get("question_threads", []) if not actor or row["actor"] in {actor, "self"}]
         candidates = list(view.get("memories", []))
         if conversation or not query:
             candidates = [r for r in candidates
@@ -119,7 +121,8 @@ class Memory:
         )[:2]
         relations = relevant_relations(view.get("relations", []), view.get("entities", []), effective, actor)
         intentions = [dict(i) for i in view.get("intentions", [])
-                      if (not actor or i["actor"] == actor) and current_thought(i, now)]
+                       if (not actor or i["actor"] == actor) and current_thought(i, now)
+                       and not blocked(i["topic"], threads)]
         questions = [dict(q) for q in view.get("all_questions", [])
                      if q["actor"] == actor and current_thought(q, now)][:2]
         portrait = dict(view.get("portraits", {}).get(actor, {}))
@@ -128,7 +131,7 @@ class Memory:
         self_story = dict(view.get("portraits", {}).get("self", {}))
         if conversation:
             # Remembering nothing is useful: ordinary greetings need no old stories.
-            events = [event for event in events if terms & event.get("_terms", set())]
+            events = [event for event in events if relevant(effective, event.get("_terms", set()), event.get("cues", []))]
             named = {
                 e["id"]
                 for e in view.get("entities", [])
@@ -148,7 +151,12 @@ class Memory:
                     portrait.pop(key, None)
             for key in ("impression", "style"):
                 if portrait.get(key):
-                    portrait[key] = portrait[key][:180]
+                    if relevant(effective, recall_terms(portrait[key])):
+                        portrait[key] = portrait[key][:180]
+                    else:
+                        portrait.pop(key, None)
+            character["habits"] = [item for item in character.get("habits", [])
+                                   if relevant(effective, recall_terms(item))]
             for key in ("preferences", "interests"):
                 character[key] = [item for item in character.get(key, []) if terms & recall_terms(item)]
             if not character.get("interests") and own_interest and not changed_topic:
@@ -167,6 +175,7 @@ class Memory:
                 character.pop("outlook", None)
                 self_story = {}
         return {
+            "question_threads": threads,
             "memories": [{k: v for k, v in row.items() if k != "_terms"} for row in rows],
             "familiar_facts": [row["content"] for row in familiar if row["id"] not in selected_ids],
             "entities": copy.deepcopy(view.get("entities", [])),
@@ -225,4 +234,12 @@ def recall_terms(value):
         "你好",
         "早上",
         "晚上",
+        "上好",
+        "晚好",
+        "解释",
     }
+
+
+def relevant(query, terms, cues=()):
+    words = recall_terms(query)
+    return len(words & terms) >= 2 or any(cue and cue in query for cue in cues)

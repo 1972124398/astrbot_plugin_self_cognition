@@ -6,6 +6,7 @@ import json
 from datetime import datetime, timezone
 
 from .cognition import digest, tokens
+from .followups import blocked
 
 
 class LifeStore:
@@ -157,6 +158,8 @@ class LifeStore:
             # A remembered intention belongs to a real participant or an already known person.
             if not self.db.execute("SELECT 1 FROM entities WHERE scope=? AND id=?", (scope, actor)).fetchone():
                 continue
+            if blocked(item["topic"], [r for r in self.question_threads(scope) if r["actor"] in {actor, "self"}]):
+                continue
             if not item["thought"]:
                 old = self.db.execute(
                     "SELECT thought FROM intentions WHERE scope=? AND actor=? AND topic=?",
@@ -226,13 +229,19 @@ class LifeStore:
             + "updated DESC,id DESC LIMIT 3",
             (scope, now, now - 30 * 86400, *considered),
         ).fetchall()
-        choices = [dict(row, intent_id=row["id"], question=row["thought"]) for row in rows]
+        threads = self.question_threads(scope)
+        choices = [dict(row, intent_id=row["id"], question=row["thought"]) for row in rows
+                   if not blocked(row["topic"], [t for t in threads if t["actor"] in {row["actor"], "self"}])]
         if choices:
             return dict(choices[0], candidates=choices)
         return None
 
     def mark_intention(self, scope, intent_id, message, now):
         with self.db:
+            intent = self.db.execute("SELECT actor,topic,kind,status,last_message FROM intentions WHERE scope=? AND id=?",
+                                     (scope, intent_id)).fetchone()
+            if intent and intent["kind"] == "ask" and not (intent["status"] == "sent" and intent["last_message"] == message):
+                self.record_question_sent(scope, intent["actor"], intent["topic"], now)
             self.db.execute(
                 "UPDATE intentions SET status='sent',last_message=?,updated=? WHERE scope=? AND id=?",
                 (message, now, scope, intent_id),

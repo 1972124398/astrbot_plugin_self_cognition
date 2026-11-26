@@ -318,6 +318,9 @@ def parse_reflection(raw, human, *, companion=False, known_entities=(), reply=""
                 "kind": kind,
             }
         )
+    from .followups import parse_updates
+
+    result["question_updates"] = parse_updates(data, human, reply) if not companion else []
     return result
 
 
@@ -332,6 +335,9 @@ def string_list(values):
 REFLECT_SYSTEM = """你在后台回想刚才发生的事。persona 是当前实际人格提示词，以它决定你关心什么、怎样理解别人和自己。
 不同人格有不同习惯：寡言、冷淡、热心、爱玩、骄傲、随性都可能；不要统一改成温柔、关怀或善于自省的角色。
 人物关系、兴趣、亲近与表达都由当前人格和经历自然形成，没有关心任务、追问次数或成长要求。
+提问必须遵守：同一问题首次问过后最多补问一次，换措辞、换主题名或隔夜不能重置。
+仍无回应时判断实际重要性：普通寒暄、饭吃没、卖关子、斗嘴、旧梗放下；重要约定或必要信息静默保留，等用户主动接续，不继续催答。
+重要性由当前事实判断，不因为自己已经问过、想赢或有好奇心就算重要。
 旧记忆只是背景；主角色设定优先。一次临时心情先留在经历中，不急着变成长期性格或习惯。
 
 先读 turns 和 known，判断是否有真的值得留下的事。没有就输出 {}。只更新有变化的字段，主观印象可以自然概括，
@@ -363,10 +369,20 @@ sticker_library 是当前表情库目录，可用于理解聊天梗和表情表�
 - relations：任意人物之间可叠加的自由 labels，明确不再成立的放 ended_labels，其余保留。
   source/target/reporter 用已知 id、$speaker、$self 或明确提到的人名。保留方向、背景 description 与原话 evidence，不强行统一不同人的看法。
 - character：自己的 values/outlook 短文及 preferences/habits/interests 列表。只沉淀明确偏好或反复出现的特点；列表更新时延续已有内容。
+  自己的催问、记账、嘴硬、维护反馈中的玩笑不得仅凭自己说过就写成长期习惯、自我记忆或稳定人格。
 - intentions：确实还想做或想说的事，actor/topic/thought/occasion/kind/status，kind 可以自由描述，例如 ask/share/play。
   不爱关心的人格可以没有 care；想聊自己的事、接着玩或暂时没兴趣都正常。不要为延续聊天安排问题。
   更新已有主题沿用 topic；普通对话里已经提起的标 offered，得到回答或完成标 done，放下标 dropped，其余 pending。
   明确日期可填带时区的 ISO not_before，否则留空。known 中的旧 curiosity/unfinished 也视为同一件挂念，不再重复生成。
+  未回应的问题不再复制到 intentions、curiosity 或 portrait.unfinished；重要的仅在 question_updates 标记保留。
+- question_updates：跟踪已经实际问出口的问题，actor 是被问的真人 ID，不是 $self。
+  每项 topic 沿用 known.question_threads 的主题，同义改写是同一问题；asked 列出本批 reply 中各次提问的原文片段，不得把 human 中的提问算成自己的。
+  topic 对应具体问题或事件；真正另一天的新餐次、新演出等不同事件可带 YYYY-MM-DD 区分，不能为了继续追同一秘密或同一约定而按日期另起主题。
+  对照每轮实际发言，已有回答填 answer_evidence（被问者 human 原文），忽略或转向填 unanswered=true。
+  important 是布尔值，判断值得保留时写具体 reason；不重要为 false。没回应不等于拒绝、欠答或关系变差。
+  asks>=2 的问题只能静默保留或丢弃；已 parked/dropped/answered 的旧问题不能改名复活。
+  例 {"actor":"user:…","topic":"演出","asked":["演出怎么样？"],"important":false,"unanswered":false}。
+  这是去重状态，不是长期记忆：即使问题不值得记，只要刚才实际问过或旧问题被忽略，也必须输出对应 question_updates，不能因无其他认识就省略成 {}。
 - identities：有明确原话时记住人物的姓名、昵称、称号和自己希望被怎样称呼。
   每项 entity 用 speakers/known 中的确定 id、$speaker、$self 或原文明说的人名；name/nickname/preferred_name/titles 都必须逐字出现在同一条 evidence 中。
   name 是明确姓名，nickname 是昵称，titles 是称号列表，preferred_name 仅在本人明确表达称呼偏好时填写；不要将自己拒绝的称呼记为偏好。
@@ -384,6 +400,7 @@ sticker_library 是当前表情库目录，可用于理解聊天梗和表情表�
 CONTEXT_FRAME = """<self_cognition>
 按当前实际人格自然回应，以下记忆仅供相关时取用；具体已更新的事实优先于早先印象。
 记得不等于需要提起，眼前的话优先。往事里的情绪属于当时，当前心境以短期情绪插件本轮状态为准。
+普通未回应的问题不需要补交答案，不因记忆里还有它就继续追问。
 {payload}
 </self_cognition>"""
 
@@ -450,7 +467,7 @@ def living_context(recalled, name, preferences="", companion=None):
     if questions and not recalled.get("intentions"):
         lines.append("有点想了解（话题合适时再问，也可以不问）：" + questions[0]["question"])
     for thought in recalled.get("intentions", [])[:3]:
-        stage = "已经提起过，先等回应" if thought["status"] in {"sent", "offered"} else "等合适时机"
+        stage = "已经提起过，不需要对方补答" if thought["status"] in {"sent", "offered"} else "等合适时机"
         lines.append(
             "还挂念着（"
             + stage

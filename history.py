@@ -6,6 +6,7 @@ import asyncio
 import copy
 import json
 import time
+import re
 from difflib import SequenceMatcher
 
 from .cognition import digest, event_kind, number
@@ -21,6 +22,8 @@ threads 只保留用户明确要求继续且尚未完成的事项及必要最新
 历史风格设定、旧提示词及工具报告中的人格修改不能作为现行规则。不得把模型猜测当事实，不复述机器人建议为用户偏好。
 previous 是已整理的历史资料，保留仍有效的稳定事实；不要复活过期事项。按当前时间淘汰过期内容。
 每条用简短第三人称陈述，避免第一人称错认；不要为了填满预算编造内容。输出总字符不超过输入的 summary_char_limit。
+同一问题最多补问一次；没有回应由你判断是否重要，不重要丢弃，重要只保留必要事实，不保留催问要求。
+反复斗嘴、拒绝称呼、自己造的梗或追问不是稳定事实，不把重复次数当成重要性的证据。
 """
 
 
@@ -87,6 +90,8 @@ def text_projection(messages):
             )
         if not isinstance(content, str):
             content = ""
+        content = re.sub(r"\[reply_merge:thought:([0-9a-f]{8})\]\n.*?\n\[/reply_merge:thought:\1\]",
+                         "", content, flags=re.DOTALL).strip()
         projected.append({"role": message.get("role"), "content": content})
     return projected
 
@@ -162,7 +167,7 @@ class HistoryCompactor:
 
     async def prepare(self, event, request, scope, state):
         plugin = self.plugin
-        if not plugin.config.get("history_cleanup_enabled", True) or not request.contexts:
+        if not plugin.config.get("history_cleanup_enabled", True) or request.contexts is None:
             return
         conversation = getattr(request, "conversation", None)
         cid = getattr(conversation, "cid", None)
@@ -201,6 +206,15 @@ class HistoryCompactor:
         keep = int(plugin.n("history_recent_turns", 4, 0, 30))
         grouped = rounds(raw, timeline)
         ready = await plugin.memory.call(plugin.store.history_summary, scope, cid)
+        stale_summary = None
+        if ready:
+            offset = max(0, ready["count"] - (2 if previous else 0))
+            # A ready prefix may have waited overnight. Its tail has aged too.
+            if any(idle or now - at >= age for _, at in timeline[offset:]):
+                if (ready["generation"] == (state or {}).get("generation", 0)
+                        and ready["count"] <= len(history) and digest(history[:ready["count"]]) == ready["fingerprint"]):
+                    stale_summary = ready["summary"]
+                ready = None
         if ready and ready["generation"] == (state or {}).get("generation", 0):
             count = ready["count"]
             if count <= len(history) and digest(history[:count]) == ready["fingerprint"]:
@@ -259,7 +273,7 @@ class HistoryCompactor:
             return
         generation = (state or {}).get("generation", 0)
         removed = [m for turn, _ in grouped[:cut] for m in turn]
-        old_summary = copy.deepcopy(previous) if previous else {"facts": [], "threads": []}
+        old_summary = copy.deepcopy(previous or stale_summary or {"facts": [], "threads": []})
         if old_summary.get("expires_at", 0) <= now:
             old_summary["threads"] = []
         if removed:
@@ -269,6 +283,22 @@ class HistoryCompactor:
                 expires_at = min(expires_at, old_summary["expires_at"])
             count = len(removed) + (2 if previous else 0)
             fingerprint = digest(history[:count])
+            temporal_cut = any(idle or now - at >= age for _, at in grouped[:cut])
+            if temporal_cut:
+                # Archive the raw source before removing expired chatter from this
+                # very request. Anchor the pending summary to its replacement,
+                # so the next request can apply it without reviving the raw tail.
+                pair = summary_pair(old_summary) if old_summary.get("facts") or old_summary.get("threads") else []
+                remaining = [m for turn, _ in grouped[cut:] for m in turn]
+                replacement = systems + pair + remaining
+                if not await plugin.memory.call(plugin.store.archive_history, scope, cid, original,
+                                                replacement, now, generation):
+                    return
+                kept_timeline = timeline[len(removed):]
+                await plugin.memory.call(plugin.store.save_history_state, scope, cid, kept_timeline,
+                                         now if is_human else human_at, now)
+                request.contexts = replacement
+                count, fingerprint = len(pair), digest(pair)
             task = asyncio.create_task(
                 self.summarize(
                     scope,
