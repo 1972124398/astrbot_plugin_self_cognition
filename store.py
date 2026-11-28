@@ -274,11 +274,15 @@ class Store(LifeStore, FollowupStore):
         return job
 
     def next_batch(self, now, eligible_scopes, quiet_seconds=45, batch_turns=6, max_wait=600):
-        rows = self.db.execute("SELECT * FROM jobs WHERE state='pending' ORDER BY created LIMIT 1024").fetchall()
+        if not eligible_scopes:
+            return None
+        placeholders = ",".join("?" for _ in eligible_scopes)
+        rows = self.db.execute(
+            f"SELECT * FROM jobs WHERE state='pending' AND scope IN ({placeholders}) ORDER BY created LIMIT 1024",
+            tuple(eligible_scopes),
+        ).fetchall()
         groups = {}
         for row in rows:
-            if row["scope"] not in eligible_scopes:
-                continue
             item = json.loads(row["payload"])
             key = (
                 row["scope"],

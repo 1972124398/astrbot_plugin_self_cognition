@@ -182,6 +182,21 @@ class StoreTests(unittest.TestCase):
         self.store.enqueue(self.job("other", scope=other))
         self.assertEqual(self.store.next_job(3000000000, [other])["id"], "other")
 
+    def test_batch_finds_eligible_work_after_a_large_ineligible_backlog(self):
+        for index in range(1024):
+            self.store.enqueue(self.job(f"ineligible-{index}"), queue_limit=2048)
+        origin = "test:FriendMessage:bob"
+        other = scope_key(origin, "p")
+        self.store.ensure_scope(other, origin, "p")
+        self.store.enqueue(self.job("eligible", scope=other, origin=origin), queue_limit=2048)
+
+        batch = self.store.next_batch(time.time() + 1, [other], quiet_seconds=0)
+
+        self.assertIsNotNone(batch)
+        self.assertEqual(batch["member_ids"], ["eligible"])
+        self.assertEqual(self.store.stats(self.scope)["pending"], 1024)
+        self.assertIsNone(self.store.next_batch(time.time() + 1, [], quiet_seconds=0))
+
     def test_queue_overflow_is_explicit_and_preserves_existing_job(self):
         self.store.enqueue(self.job(), 1)
         with self.assertRaises(OverflowError):

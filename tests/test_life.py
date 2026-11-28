@@ -5,6 +5,7 @@ import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import test_hooks as fixtures
 from astrbot_plugin_self_cognition.main import ObservedGroup
@@ -301,3 +302,47 @@ class RuntimeLifeTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(cancelled.is_set())
         release.set()
         await self.plugin.capture_queue.join()
+
+    async def test_reflection_worker_retries_provider_and_queue_lookup_without_a_new_message(self):
+        event, _ = await self.case.exchange()
+        pending = dict(event.get_extra(fixtures.TURN), id="reflection-retry", reply="好。")
+        await self.plugin.memory.call(self.plugin.store.capture, pending)
+        self.plugin.config.update(analysis_provider_id="background-model", reflection_idle_seconds=0)
+        self.plugin.frontend["foreground"] = time.monotonic() + 60
+        self.plugin.front_origins["foreground"] = event.unified_msg_origin
+        lookup = self.context.get_current_chat_provider_id
+        lookup.reset_mock()
+        lookup.side_effect = [RuntimeError("provider unavailable"), "test-provider", "test-provider", "test-provider"]
+        next_batch = self.plugin.store.next_batch
+        applied = asyncio.Event()
+        process = self.plugin.process
+        fail_read = True
+
+        def read(*args):
+            nonlocal fail_read
+            if fail_read:
+                fail_read = False
+                raise OSError("read unavailable")
+            return next_batch(*args)
+
+        async def observe(job):
+            result = await process(job)
+            if result:
+                applied.set()
+            return result
+
+        with (
+            patch.object(self.plugin.store, "next_batch", side_effect=read),
+            patch.object(self.plugin, "process", side_effect=observe),
+        ):
+            self.plugin.ensure_worker()
+            worker = self.plugin.worker
+            for error in ("RuntimeError", "OSError"):
+                async with asyncio.timeout(1):
+                    while not self.plugin.last_error.endswith(error) and not worker.done():
+                        await asyncio.sleep(0.01)
+                self.assertFalse(worker.done())
+                self.plugin.wake.set()
+            await asyncio.wait_for(applied.wait(), 2)
+            self.assertIs(self.plugin.worker, worker)
+            self.assertEqual(self.plugin.store.stats(pending["scope"])["pending"], 0)

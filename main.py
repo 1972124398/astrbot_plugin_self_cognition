@@ -620,18 +620,23 @@ class SelfCognition(Star):
     async def run(self):
         while not self.closing:
             self.wake.clear()
-            eligible = [s["id"] for s in self.memory.states.values() if not s["paused"] and self.allowed(s["origin"])]
             job = None
-            independent = await self.independent_provider() if self.chatting() else False
-            if not self.chatting() or independent:
-                job = await self.memory.call(
-                    self.store.next_batch,
-                    time.time(),
-                    eligible,
-                    self.n("reflection_idle_seconds", 45, 0, 600),
-                    int(self.n("reflection_batch_turns", 6, 1, 30)),
-                    self.n("reflection_max_wait_minutes", 10, 1, 60) * 60,
-                )
+            independent = False
+            try:
+                eligible = [s["id"] for s in self.memory.states.values() if not s["paused"] and self.allowed(s["origin"])]
+                independent = await self.independent_provider() if self.chatting() else False
+                if not self.chatting() or independent:
+                    job = await self.memory.call(
+                        self.store.next_batch,
+                        time.time(),
+                        eligible,
+                        self.n("reflection_idle_seconds", 45, 0, 600),
+                        int(self.n("reflection_batch_turns", 6, 1, 30)),
+                        self.n("reflection_max_wait_minutes", 10, 1, 60) * 60,
+                    )
+            except Exception as error:
+                self.last_error = "暂时无法准备后台整理：" + type(error).__name__
+                logger.warning("Self-cognition reflection preparation deferred (%s)", type(error).__name__)
             if job and (not self.chatting() or independent):
                 try:
                     self.analysis_independent = independent

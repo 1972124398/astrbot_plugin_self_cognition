@@ -115,6 +115,44 @@ class HistoryTests(unittest.IsolatedAsyncioTestCase):
         await self.prepare(request)
         self.assertEqual(request.contexts[2:], fresh)
 
+    async def test_idle_summary_applies_once_after_the_same_persona_examples(self):
+        from astrbot.core.agent.message import bind_checkpoint_messages, dump_messages_with_checkpoints
+
+        examples = [{**message, "_no_save": True} for message in turns(2, 1000)]
+        request = self.request(examples + turns(2, 10), updated=time.time() - 7200)
+        await self.prepare(request)
+        self.assertEqual(request.contexts, examples)
+        await self.finish()
+        self.assertEqual(self.plugin.store.history_summary(self.scope, request.conversation.cid)["count"], 0)
+
+        fresh = turns(1, 15)
+        request.contexts += fresh
+        await self.prepare(request)
+        self.assertEqual(request.contexts[:len(examples)], examples)
+        summary, remaining = extract_summary(request.contexts[len(examples):])
+        self.assertEqual(summary["facts"], ["Alice 喜欢无糖茶"])
+        self.assertEqual(remaining, fresh)
+
+        saved_history = dump_messages_with_checkpoints(bind_checkpoint_messages(request.contexts[len(examples):]))
+        previous_request = examples + saved_history
+        request = self.request(previous_request + turns(1, 20))
+        await self.prepare(request)
+        self.assertEqual(request.contexts, previous_request + turns(1, 20))
+        self.context.llm_generate.assert_awaited_once()
+
+    async def test_existing_duplicate_summaries_are_removed_without_losing_distinct_history(self):
+        examples = [{**message, "_no_save": True} for message in turns(1, 5)]
+        summary = summary_pair({"facts": ["Alice 喜欢茶"], "threads": [], "expires_at": 0})
+        different = summary_pair({"facts": ["Alice 喜欢猫"], "threads": [], "expires_at": 0})
+        recent = turns(1, 20)
+        original = examples + summary * 3 + different + recent
+        request = self.request(original)
+        await self.prepare(request)
+        self.assertEqual(request.contexts, examples + summary + different + recent)
+        archive = self.plugin.store.db.execute("SELECT original FROM history_archives").fetchone()
+        self.assertEqual(json.loads(archive[0]), original)
+        self.context.llm_generate.assert_not_awaited()
+
     async def test_ready_prefix_does_not_keep_overnight_raw_tail(self):
         request = self.request()
         await self.prepare(request)

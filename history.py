@@ -40,13 +40,19 @@ def summary_pair(summary):
 
 def extract_summary(messages):
     """Recognize only our own complete pair, never an arbitrary user quotation."""
-    if len(messages) < 2 or messages[0].get("role") != "user" or messages[1].get("content") != ACK:
+    if (
+        len(messages) < 2
+        or messages[0].get("role") != "user"
+        or messages[1].get("role") != "assistant"
+        or messages[1].get("content") != ACK
+    ):
         return None, messages
     content = messages[0].get("content")
-    if not isinstance(content, str) or not content.startswith(MARKER):
+    closing = "</self_cognition_history>"
+    if not isinstance(content, str) or not content.startswith(MARKER) or not content.endswith(closing):
         return None, messages
     try:
-        value = json.loads(content[len(MARKER) :].removesuffix("</self_cognition_history>"))
+        value = json.loads(content[len(MARKER) : -len(closing)])
         if isinstance(value, dict) and isinstance(value.get("facts"), list) and isinstance(value.get("threads"), list):
             return value, messages[2:]
     except (ValueError, TypeError):
@@ -199,10 +205,31 @@ class HistoryCompactor:
         generation = (state or {}).get("history_generation", 0)
         self.retry_at = {key: until for key, until in self.retry_at.items() if until > now}
         original = copy.deepcopy(request.contexts)
-        # System messages are owned by AstrBot/persona/plugins, never summarized.
-        systems = [m for m in original if m.get("role") == "system"]
+        # AstrBot prepends persona examples on every request and does not save them.
+        # Keep them ahead of the conversation and out of the summary fingerprint.
+        prefix = [m for m in original if m.get("role") == "system"]
         history = [m for m in original if m.get("role") != "system"]
+        prefill_count = next(
+            (i for i, message in enumerate(history) if message.get("_no_save") is not True),
+            len(history),
+        )
+        prefix.extend(history[:prefill_count])
+        history = history[prefill_count:]
         previous, raw = extract_summary(history)
+        if previous is not None:
+            pair = history[:2]
+            duplicate_count = 0
+            while raw[duplicate_count : duplicate_count + 2] == pair:
+                duplicate_count += 2
+            if duplicate_count:
+                raw = raw[duplicate_count:]
+                history = pair + raw
+                replacement = prefix + history
+                if not await plugin.memory.call(
+                    plugin.store.archive_history, scope, cid, original, replacement, now, generation
+                ):
+                    return
+                request.contexts = original = replacement
         saved = await plugin.memory.call(plugin.store.history_state, scope, cid)
         initial = number(getattr(request.conversation, "updated_at", 0), now, 0, now) or now
         timeline = align_times(raw, saved.get("timeline", []), initial, now)
@@ -217,26 +244,31 @@ class HistoryCompactor:
         ready = await plugin.memory.call(plugin.store.history_summary, scope, cid)
         stale_summary = None
         if ready:
-            offset = max(0, ready["count"] - (2 if previous else 0))
+            count = ready["count"]
+            if (
+                ready["generation"] != generation
+                or not 0 <= count <= len(history)
+                or (count == 0 and previous is not None)
+                or digest(history[:count]) != ready["fingerprint"]
+            ):
+                ready = None
+        if ready:
+            offset = max(0, count - (2 if previous else 0))
             # A ready prefix may have waited overnight. Its tail has aged too.
             if any(idle or now - at >= age for _, at in timeline[offset:]):
-                if (ready["generation"] == generation
-                        and ready["count"] <= len(history) and digest(history[:ready["count"]]) == ready["fingerprint"]):
-                    stale_summary = ready["summary"]
+                stale_summary = ready["summary"]
                 ready = None
-        if ready and ready["generation"] == generation:
-            count = ready["count"]
-            if count <= len(history) and digest(history[:count]) == ready["fingerprint"]:
-                summary = ready["summary"]
-                if summary.get("expires_at", 0) <= now:
-                    summary["threads"] = []
-                pair = summary_pair(summary) if summary.get("facts") or summary.get("threads") else []
-                replacement = systems + pair + history[count:]
+        if ready:
+            summary = ready["summary"]
+            if summary.get("expires_at", 0) <= now:
+                summary["threads"] = []
+            pair = summary_pair(summary) if summary.get("facts") or summary.get("threads") else []
+            replacement = prefix + pair + history[count:]
+            if replacement != original:
                 if not await plugin.memory.call(
                     plugin.store.archive_history, scope, cid, original, replacement, now, ready["generation"]
                 ):
                     return
-                offset = count - (2 if previous else 0)
                 if not await plugin.memory.call(
                     plugin.store.save_history_state, scope, cid, timeline[offset:], now if is_human else human_at,
                     now, generation=generation,
@@ -302,7 +334,7 @@ class HistoryCompactor:
                 # so the next request can apply it without reviving the raw tail.
                 pair = summary_pair(old_summary) if old_summary.get("facts") or old_summary.get("threads") else []
                 remaining = [m for turn, _ in grouped[cut:] for m in turn]
-                replacement = systems + pair + remaining
+                replacement = prefix + pair + remaining
                 if not await plugin.memory.call(plugin.store.archive_history, scope, cid, original,
                                                 replacement, now, generation):
                     return
@@ -337,7 +369,7 @@ class HistoryCompactor:
         else:
             # Expiring a short-lived thread needs no model call.
             pair = summary_pair(old_summary) if old_summary.get("facts") else []
-            replacement = systems + pair + raw
+            replacement = prefix + pair + raw
             if await plugin.memory.call(
                 plugin.store.archive_history, scope, cid, original, replacement, now, generation
             ):
